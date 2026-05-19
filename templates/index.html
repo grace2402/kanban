@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kanban Board - Monitoring System</title>
+  <link rel="stylesheet" href="/static/css/kanban.css">
+  <script src="/static/js/kanban.js"></script>
+</head>
+<body>
+
+<nav class="navbar">
+  <div class="nav-brand">&#x1f4cb; Kanban Board</div>
+  <div class="nav-links">
+    {% if user_email %}
+      <span class="user-info">{{ user_email }}</span>
+      <a href="/calendar" class="toggle-btn" style="margin-right:8px;">&#x1f4c5; 行事曆</a>
+      <a href="/logout" class="btn-logout">登出</a>
+    {% else %}
+      <span class="nav-note">請登入以使用看板功能</span>
+      <a href="/login" class="btn-login">Google 登入</a>
+    {% endif %}
+  </div>
+</nav>
+
+<div class="kanban-wrapper" id="kanbanWrapper">
+  <div class="kanban-board" id="kanbanBoard">
+    {% if not user_email %}
+    <!-- Login Gate Overlay -->
+    <div class="login-gate" id="loginGate">
+      <div class="gate-content">
+        <div class="gate-icon">&#x1f512;</div>
+        <h2>需要登入才能使用看板功能</h2>
+        <p>請點擊右上角「Google 登入」按鈕授權後再回來操作。</p>
+      </div>
+    </div>
+    {% endif %}
+    <div class="kanban-column column-backlog" data-column="backlog">
+      <div class="column-header"><span>&#x1f4cb; Backlog</span><span class="column-count" id="count-backlog">0</span></div>
+      <div class="column-body" id="col-backlog" ondragover="allowDrop(event)" ondrop="dropCard(event, 'backlog')"></div>
+      <button class="add-card-btn" onclick="openAddModal('backlog')">+ 新增任務</button>
+    </div>
+    <div class="kanban-column column-todo" data-column="todo">
+      <div class="column-header"><span>&#x1f4dd; To Do</span><span class="column-count" id="count-todo">0</span></div>
+      <div class="column-body" id="col-todo" ondragover="allowDrop(event)" ondrop="dropCard(event, 'todo')"></div>
+      <button class="add-card-btn" onclick="openAddModal('todo')">+ 新增任務</button>
+    </div>
+    <div class="kanban-column column-in_progress" data-column="in_progress">
+      <div class="column-header"><span>&#x1f528; In Progress</span><span class="column-count" id="count-in_progress">0</span></div>
+      <div class="column-body" id="col-in_progress" ondragover="allowDrop(event)" ondrop="dropCard(event, 'in_progress')"></div>
+      <button class="add-card-btn" onclick="openAddModal('in_progress')">+ 新增任務</button>
+    </div>
+    <div class="kanban-column column-review" data-column="review">
+      <div class="column-header"><span>&#x1f50d; Review</span><span class="column-count" id="count-review">0</span></div>
+      <div class="column-body" id="col-review" ondragover="allowDrop(event)" ondrop="dropCard(event, 'review')"></div>
+      <button class="add-card-btn" onclick="openAddModal('review')">+ 新增任務</button>
+    </div>
+    <div class="kanban-column column-done" data-column="done">
+      <div class="column-header"><span>&#x2705; Done</span><span class="column-count" id="count-done">0</span></div>
+      <div class="column-body" id="col-done" ondragover="allowDrop(event)" ondrop="dropCard(event, 'done')"></div>
+      <button class="add-card-btn" onclick="openAddModal('done')">+ 新增任務</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal -->
+<div class="modal-overlay" id="cardModal">
+  <div class="modal-box">
+    <h3 id="modalTitle">新增任務</h3>
+
+    <!-- Basic fields -->
+    <div class="form-group"><label>標題</label><input type="text" id="taskTitle" placeholder="輸入任務標題"></div>
+    <div class="form-group"><label>描述</label><textarea id="taskDesc" placeholder="輸入任務描述"></textarea></div>
+    <div class="form-group">
+      <label>優先級</label>
+      <select id="taskPriority">
+        <option value="high">高</option>
+        <option value="medium" selected>中</option>
+        <option value="low">低</option>
+      </select>
+    </div>
+
+    <!-- Assignee search (Phase 3: multi-select) -->
+    <div class="form-group form-assignee">
+      <label>&#x1f464; 指派人（可多選）</label>
+      <input type="text" id="taskAssigneeInput" placeholder="輸入姓名或 Email 搜尋..." autocomplete="off">
+      <div id="assigneeDropdown" class="assignee-dropdown hidden"></div>
+      <input type="hidden" id="assignedUserEmails" value="">
+      <div id="assigneeBadgesContainer" style="display:none; flex-wrap:wrap; gap:4px;"></div>
+    </div>
+
+    <!-- Date/time pickers (Phase 3) -->
+    <div class="form-datetime">
+      <div class="form-group">
+        <label>&#x1f4c5; 開始時間</label>
+        <input type="datetime-local" id="taskStartTime" value="2026-05-18T00:00">
+      </div>
+      <div class="form-group">
+        <label>&#x1f4c5; 結束時間</label>
+        <input type="datetime-local" id="taskEndTime" value="2026-05-18T23:59">
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeModal()">取消</button>
+      <button class="btn-save" onclick="saveTask()">&#x1f4be; 儲存</button>
+    </div>
+  </div>
+</div>
+
+{% autoescape false %}
+<script>
+// Pass user email to JS for calendar and assignee features
+window.currentUserEmail = '{{ currentUserEmail }}';
+</script>
+{% endautoescape %}
+
+</body>
+</html>

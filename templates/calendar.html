@@ -1,0 +1,851 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>我的行事曆 - Kanban Board</title>
+  <link rel="stylesheet" href="/static/css/kanban.css">
+  <style>
+    /* Calendar-specific styles */
+    .calendar-nav {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+
+    .calendar-nav button {
+      background: rgba(255, 255, 255, 0.7);
+      border: 1px solid var(--border-color);
+      color: #334155;
+      padding: 8px 16px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      box-shadow: 0 1px 4px rgba(91, 164, 230, 0.08);
+    }
+
+    .calendar-nav button:hover {
+      background: var(--accent-blue);
+      color: #fff;
+      border-color: var(--accent-blue);
+    }
+
+    .calendar-nav .current-month {
+      font-size: 20px;
+      font-weight: 700;
+      min-width: 180px;
+      text-align: center;
+      color: #1e3a5f;
+    }
+
+    .calendar-toggle-bar {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+
+    .toggle-btn {
+      padding: 6px 16px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border: 1px solid var(--border-color);
+      background: transparent;
+      color: var(--text-secondary);
+    }
+
+    .toggle-btn.active {
+      background: var(--accent-blue);
+      color: #fff;
+      border-color: var(--accent-blue);
+      box-shadow: 0 2px 8px rgba(91, 164, 230, 0.25);
+    }
+
+    /* Person filter wrapper - hidden by default, shown via JS */
+    .person-filter-wrapper {
+      display: none;
+      justify-content: center;
+      margin-bottom: 16px;
+      position: relative;
+    }
+    
+    .filter-toggle-btn {
+      padding: 8px 32px 8px 14px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border: 1px solid var(--border-color);
+      background: transparent;
+      color: var(--text-secondary);
+      min-width: 200px;
+      transition: all 0.2s ease;
+    }
+
+    .filter-toggle-btn:hover {
+      border-color: var(--accent-blue);
+      color: #1e3a5f;
+      background: rgba(91, 164, 230, 0.08);
+    }
+
+    .filter-dropdown-list {
+      position: absolute;
+      top: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(255, 255, 255, 0.85);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 8px 0;
+      min-width: 260px;
+      max-height: 300px;
+      overflow-y: auto;
+      z-index: 50;
+      box-shadow: 0 4px 20px rgba(91, 164, 230, 0.12),
+                  inset 0 1px 0 rgba(255, 255, 255, 0.8);
+      display: none;
+    }
+
+    .filter-dropdown-list.open {
+      display: block;
+    }
+
+    .filter-checkbox-item {
+      padding: 8px 16px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      color: var(--text-secondary);
+      transition: background 0.15s;
+    }
+
+    .filter-checkbox-item:hover {
+      background: rgba(91, 164, 230, 0.08);
+      color: #1e3a5f;
+    }
+
+    .filter-checkbox-item input[type="checkbox"] {
+      accent-color: var(--accent-blue);
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+    }
+
+    .filter-count-badge {
+      background: rgba(91, 164, 230, 0.2);
+      color: #3a7bc8;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      margin-left: auto;
+    }
+    
+    .calendar-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 4px;
+      max-width: 960px;
+      margin: 0 auto;
+    }
+
+    .calendar-day-header {
+      text-align: center;
+      font-weight: 700;
+      color: var(--text-secondary);
+      font-size: 12px;
+      padding: 8px 0;
+      text-transform: uppercase;
+    }
+
+    /* Calendar day cells — Liquid Crystal Glass */
+    .calendar-cell {
+      min-height: 100px;
+      background: linear-gradient(168deg, rgba(255, 255, 255, 0.75) 0%, rgba(248, 252, 255, 0.65) 50%, rgba(243, 249, 255, 0.6) 100%);
+      border-radius: 12px;
+      padding: 6px;
+      position: relative;
+      transition: background 0.2s ease, transform 0.15s ease;
+    }
+
+    .calendar-cell::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 12px;
+      padding: 1px;
+      background: linear-gradient(168deg, rgba(255, 255, 255, 0.9) 0%, rgba(200, 220, 240, 0.4) 50%, rgba(180, 200, 230, 0.2) 100%);
+      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      pointer-events: none;
+    }
+
+    .calendar-cell::after {
+      content: '';
+      position: absolute;
+      top: -40%;
+      left: -20%;
+      width: 140%;
+      height: 140%;
+      background: radial-gradient(ellipse at 30% 25%, rgba(255, 255, 255, 0.6) 0%, transparent 55%);
+      pointer-events: none;
+      opacity: 0.7;
+    }
+
+    .calendar-cell {
+      box-shadow: 
+        0 2px 12px rgba(91, 164, 230, 0.08),
+        0 1px 3px rgba(91, 164, 230, 0.05),
+        inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    }
+
+    .calendar-cell.empty {
+      background: transparent;
+      box-shadow: none;
+      border-color: transparent;
+    }
+
+    .calendar-cell::before,
+    .calendar-cell::after,
+    .calendar-cell.empty { display: none; }
+
+    .calendar-cell.today {
+      border: 2px solid var(--accent-blue);
+      background: linear-gradient(168deg, rgba(91, 164, 230, 0.1) 0%, rgba(74, 157, 224, 0.08) 100%);
+      box-shadow: 
+        0 4px 16px rgba(91, 164, 230, 0.15),
+        inset 0 1px 0 rgba(255, 255, 255, 1);
+    }
+
+    .calendar-cell.other-month {
+      opacity: 0.3;
+    }
+
+    .calendar-cell:hover:not(.empty) {
+      background: linear-gradient(168deg, rgba(91, 164, 230, 0.12) 0%, rgba(74, 157, 224, 0.08) 100%);
+      transform: translateY(-1px);
+    }
+
+    .calendar-cell:hover::after {
+      opacity: 1;
+    }
+
+    .cell-date {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 4px;
+      cursor: pointer;
+      user-select: none;
+      transition: color 0.15s;
+    }
+
+    .cell-date:hover {
+      color: var(--accent-blue);
+    }
+
+    .calendar-cell.today .cell-date {
+      color: var(--accent-blue);
+      font-weight: 700;
+    }
+
+    .cell-task {
+      display: block;
+      font-size: 11px;
+      padding: 3px 6px;
+      margin-bottom: 2px;
+      border-radius: 4px;
+      cursor: pointer;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .cell-task.priority-high {
+      background: rgba(231, 76, 92, 0.15);
+      color: #c0392b;
+    }
+
+    .cell-task.priority-medium {
+      background: rgba(240, 160, 48, 0.15);
+      color: #d98a1e;
+    }
+
+    .cell-task.priority-low {
+      background: rgba(29, 185, 84, 0.15);
+      color: #1db954;
+    }
+
+    /* Task-specific distinct colors */
+    .cell-task.color-blue {
+      background: rgba(52, 152, 219, 0.15);
+      color: #2980b9;
+    }
+
+    .cell-task.color-purple {
+      background: rgba(155, 89, 182, 0.15);
+      color: #8e44ad;
+    }
+
+    .cell-task.color-teal {
+      background: rgba(26, 188, 156, 0.15);
+      color: #16a085;
+    }
+
+    .cell-task.color-pink {
+      background: rgba(232, 67, 147, 0.15);
+      color: #c2185b;
+    }
+
+    .cell-task.color-indigo {
+      background: rgba(99, 110, 114, 0.15);
+      color: #546e7a;
+    }
+
+    .cell-task.color-cyan {
+      background: rgba(0, 206, 209, 0.15);
+      color: #0097a7;
+    }
+
+    .cell-task:hover {
+      filter: brightness(0.95);
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+    }
+
+    /* Overlap highlight — red pulsing border */
+    .cell-task.overlap-highlight {
+      border: 2px solid #e74c5c;
+      animation: overlapPulse 1.5s ease-in-out infinite alternate;
+    }
+
+    @keyframes overlapPulse {
+      from { box-shadow: 0 0 4px rgba(231, 76, 92, 0.3); }
+      to   { box-shadow: 0 0 12px rgba(231, 76, 92, 0.5); }
+    }
+
+    /* Overlap highlight for timeline rows in modal */
+    .task-timeline-row.overlap-highlight {
+      border-left-color: #e74c5c !important;
+      animation: timelinePulse 1.5s ease-in-out infinite alternate;
+    }
+
+    @keyframes timelinePulse {
+      from { box-shadow: inset 0 0 8px rgba(231, 76, 92, 0.08); }
+      to   { box-shadow: inset 0 0 16px rgba(231, 76, 92, 0.15); }
+    }
+
+    /* Assignee label on calendar cells */
+    .cell-assignee {
+      font-size: 9px;
+      color: var(--text-secondary);
+      display: block;
+      margin-top: 1px;
+    }
+
+    /* Day cell click cursor */
+    .calendar-cell {
+      cursor: pointer;
+    }
+    
+    .calendar-cell:not(.empty):hover {
+      background: rgba(91, 164, 230, 0.1);
+    }
+    
+    .calendar-cell.empty:hover {
+      background: rgba(91, 164, 230, 0.04);
+    }
+
+    /* Calendar Modal — Liquid Crystal Glass */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(30, 41, 59, 0.4);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      z-index: 1000;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .modal-overlay.show {
+      display: flex;
+    }
+
+    .modal-container {
+      background: linear-gradient(168deg, rgba(255, 255, 255, 0.92) 0%, rgba(248, 252, 255, 0.85) 50%, rgba(243, 249, 255, 0.8) 100%);
+      border-radius: 18px;
+      width: 90%;
+      max-width: 600px;
+      max-height: 80vh;
+      overflow-y: auto;
+      position: relative;
+    }
+
+    .modal-container::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 18px;
+      padding: 2px;
+      background: linear-gradient(168deg, rgba(255, 255, 255, 1) 0%, rgba(210, 230, 250, 0.5) 40%, rgba(190, 215, 240, 0.25) 100%);
+      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      pointer-events: none;
+    }
+
+    .modal-container {
+      box-shadow: 
+        0 12px 48px rgba(91, 164, 230, 0.18),
+        0 4px 16px rgba(91, 164, 230, 0.1),
+        inset 0 1px 0 rgba(255, 255, 255, 1),
+        inset 0 -1px 0 rgba(180, 200, 230, 0.3);
+    }
+
+    /* Task dropdown items — Liquid Crystal Glass */
+    .task-dropdown-item {
+      margin-bottom: 8px;
+      border: none;
+      border-radius: 10px;
+      overflow: hidden;
+      background: linear-gradient(168deg, rgba(255, 255, 255, 0.7) 0%, rgba(248, 252, 255, 0.6) 100%);
+      position: relative;
+    }
+
+    .task-dropdown-item::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 10px;
+      padding: 1px;
+      background: linear-gradient(168deg, rgba(255, 255, 255, 0.9) 0%, rgba(200, 220, 240, 0.4) 100%);
+      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      pointer-events: none;
+    }
+
+    .task-dropdown-item {
+      box-shadow: 
+        0 2px 8px rgba(91, 164, 230, 0.06),
+        inset 0 1px 0 rgba(255, 255, 255, 0.8);
+    }
+
+    /* Filter dropdown — Liquid Crystal Glass */
+    .filter-dropdown-list {
+      position: absolute;
+      top: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      background: linear-gradient(168deg, rgba(255, 255, 255, 0.9) 0%, rgba(245, 250, 255, 0.85) 100%);
+      border: none;
+      border-radius: 12px;
+      padding: 8px 0;
+      min-width: 260px;
+      max-height: 300px;
+      overflow-y: auto;
+      z-index: 50;
+      box-shadow: 
+        0 8px 32px rgba(91, 164, 230, 0.15),
+        0 2px 8px rgba(91, 164, 230, 0.08),
+        inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    }
+
+    .filter-dropdown-list::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 12px;
+      padding: 1px;
+      background: linear-gradient(168deg, rgba(255, 255, 255, 1) 0%, rgba(200, 220, 240, 0.5) 100%);
+      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      pointer-events: none;
+    }
+
+    .filter-toggle-btn {
+      padding: 8px 32px 8px 14px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      background: linear-gradient(168deg, rgba(255, 255, 255, 0.7) 0%, rgba(245, 250, 255, 0.6) 100%);
+      color: var(--text-secondary);
+      border: none;
+      min-width: 200px;
+      transition: all 0.2s ease;
+    }
+
+    .filter-toggle-btn::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 20px;
+      padding: 1px;
+      background: linear-gradient(168deg, rgba(255, 255, 255, 0.9) 0%, rgba(200, 220, 240, 0.4) 100%);
+      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      pointer-events: none;
+    }
+
+    .filter-toggle-btn:hover {
+      background: linear-gradient(168deg, rgba(255, 255, 255, 0.9) 0%, rgba(240, 248, 255, 0.7) 100%);
+      color: #1e3a5f;
+    }
+
+    .filter-toggle-btn {
+      box-shadow: 
+        0 2px 8px rgba(91, 164, 230, 0.08),
+        inset 0 1px 0 rgba(255, 255, 255, 0.7);
+      position: relative;
+    }
+
+    .filter-toggle-btn:hover {
+      box-shadow: 
+        0 4px 16px rgba(91, 164, 230, 0.12),
+        inset 0 1px 0 rgba(255, 255, 255, 0.8);
+    }
+
+    /* Task header — Liquid Crystal Glass */
+    .task-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 14px;
+      cursor: pointer;
+      background: linear-gradient(168deg, rgba(91, 164, 230, 0.03) 0%, rgba(74, 157, 224, 0.02) 100%);
+      transition: background 0.15s;
+    }
+
+    .task-header:hover {
+      background: linear-gradient(168deg, rgba(91, 164, 230, 0.08) 0%, rgba(74, 157, 224, 0.04) 100%);
+    }
+
+    .task-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #1e293b;
+      flex: 1;
+      margin-right: 10px;
+    }
+
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .modal-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: #1e3a5f;
+    }
+
+    .modal-close {
+      background: none;
+      border: none;
+      font-size: 24px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      padding: 0;
+      line-height: 1;
+    }
+
+    .modal-close:hover {
+      color: #e74c5c;
+    }
+
+    .modal-body {
+      padding: 20px;
+    }
+
+    /* Task details — Liquid Crystal Glass */
+    .task-details {
+      display: none;
+      padding: 12px 14px;
+      border-top: 1px solid var(--border-color);
+      background: linear-gradient(168deg, rgba(91, 164, 230, 0.03) 0%, rgba(74, 157, 224, 0.02) 100%);
+    }
+
+    .task-details.expanded {
+      display: block;
+    }
+
+    .task-meta-item {
+      margin-bottom: 6px;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .task-meta-item strong {
+      color: #334155;
+      font-weight: 600;
+    }
+
+    .no-tasks-msg {
+      text-align: center;
+      padding: 40px 20px;
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+
+    /* Timeline rows — Liquid Crystal Glass */
+    .task-timeline-row {
+      margin-bottom: 8px;
+      border-left: 3px solid transparent;
+      transition: border-color 0.2s;
+      background: linear-gradient(168deg, rgba(255, 255, 255, 0.4) 0%, rgba(248, 252, 255, 0.3) 100%);
+      border-radius: 8px;
+      padding: 4px 8px;
+    }
+
+    .task-timeline-row:hover {
+      background: linear-gradient(168deg, rgba(91, 164, 230, 0.06) 0%, rgba(74, 157, 224, 0.03) 100%);
+    }
+
+    /* Toggle bar — Liquid Crystal Glass */
+    .calendar-toggle-bar {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+      justify-content: center;
+    }
+
+    .toggle-btn {
+      padding: 8px 20px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      background: linear-gradient(168deg, rgba(255, 255, 255, 0.7) 0%, rgba(245, 250, 255, 0.6) 100%);
+      color: var(--text-secondary);
+      border: none;
+      transition: all 0.2s ease;
+    }
+
+    .toggle-btn::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 20px;
+      padding: 1px;
+      background: linear-gradient(168deg, rgba(255, 255, 255, 0.9) 0%, rgba(200, 220, 240, 0.4) 100%);
+      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      pointer-events: none;
+    }
+
+    .toggle-btn:hover {
+      background: linear-gradient(168deg, rgba(255, 255, 255, 0.9) 0%, rgba(240, 248, 255, 0.7) 100%);
+    }
+
+    .toggle-btn.active {
+      background: linear-gradient(168deg, #4a9de0 0%, #3b82f6 100%);
+      color: white;
+      box-shadow: 
+        0 4px 12px rgba(59, 130, 246, 0.3),
+        inset 0 1px 0 rgba(255, 255, 255, 0.3);
+    }
+
+    .toggle-btn {
+      box-shadow: 
+        0 2px 8px rgba(91, 164, 230, 0.08),
+        inset 0 1px 0 rgba(255, 255, 255, 0.7);
+      position: relative;
+    }
+
+    /* Calendar navigation — Liquid Crystal Glass */
+    .calendar-nav {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+
+    .calendar-nav button {
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      background: linear-gradient(168deg, rgba(255, 255, 255, 0.7) 0%, rgba(245, 250, 255, 0.6) 100%);
+      color: var(--text-secondary);
+      border: none;
+      transition: all 0.2s ease;
+    }
+
+    .calendar-nav button::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 20px;
+      padding: 1px;
+      background: linear-gradient(168deg, rgba(255, 255, 255, 0.9) 0%, rgba(200, 220, 240, 0.4) 100%);
+      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      pointer-events: none;
+    }
+
+    .calendar-nav button:hover {
+      background: linear-gradient(168deg, rgba(255, 255, 255, 0.9) 0%, rgba(240, 248, 255, 0.7) 100%);
+      color: #1e3a5f;
+    }
+
+    .calendar-nav button {
+      box-shadow: 
+        0 2px 8px rgba(91, 164, 230, 0.08),
+        inset 0 1px 0 rgba(255, 255, 255, 0.7);
+      position: relative;
+    }
+
+    .calendar-nav button:hover {
+      box-shadow: 
+        0 4px 16px rgba(91, 164, 230, 0.12),
+        inset 0 1px 0 rgba(255, 255, 255, 0.8);
+    }
+
+    .current-month {
+      font-size: 18px;
+      font-weight: 700;
+      color: #1e3a5f;
+    }
+    
+    /* ── Timeline layout for day detail modal ── */
+    .task-timeline-row {
+      margin-bottom: 8px;
+      border-left: 3px solid transparent;
+      transition: border-color 0.2s;
+    }
+    
+    .task-timeline-row:hover {
+      background: rgba(91, 164, 230, 0.04);
+    }
+    
+    .timeline-time {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--accent-blue);
+      min-width: 100px;
+      padding: 8px 0 8px 14px;
+      flex-shrink: 0;
+    }
+    
+    .timeline-body {
+      flex: 1;
+      padding: 8px 14px;
+      cursor: pointer;
+    }
+    
+    .task-timeline-row {
+      display: flex;
+      align-items: stretch;
+    }
+    
+    .timeline-assignees {
+      margin-top: 4px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+    
+    .timeline-assignee-pill {
+      font-size: 10px;
+      padding: 2px 8px;
+      background: rgba(91, 164, 230, 0.15);
+      color: #3a7bc8;
+      border-radius: 10px;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+    }
+
+    @media (max-width: 768px) {
+      .calendar-cell { min-height: 70px; }
+      .cell-task { font-size: 10px; padding: 2px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    }
+  </style>
+
+  <!-- Task Detail Modal -->
+  <div class="modal-overlay" id="taskModal">
+    <div class="modal-container">
+      <div class="modal-header">
+        <h3 class="modal-title" id="modalTitle"></h3>
+        <button class="modal-close" onclick="closeTaskModal()">&times;</button>
+      </div>
+      <div class="modal-body" id="modalBody">
+        <!-- Tasks will be inserted here -->
+      </div>
+    </div>
+  </div>
+</head>
+<body>
+
+<nav class="navbar">
+  <div class="nav-brand"><a href="/" style="color:#fff;text-decoration:none;">📋 Kanban Board</a></div>
+  <div class="nav-links">
+    {% if user_email %}
+      <span class="user-info">{{ user_email }}</span>
+      <a href="/calendar" class="toggle-btn active-nav" style="margin-right:8px;">📅 行事曆</a>
+      <a href="/" class="toggle-btn" style="margin-right:8px;">📋 看板</a>
+      <a href="/logout" class="btn-logout">登出</a>
+    {% else %}
+      <span class="nav-note">請登入以使用看板功能</span>
+      <a href="/login" class="btn-login">Google 登入</a>
+    {% endif %}
+  </div>
+</nav>
+
+<div style="padding: 20px; max-width: 1000px; margin: 0 auto;">
+  <!-- Toggle bar -->
+  <div class="calendar-toggle-bar" id="toggleBar">
+    <button class="toggle-btn active" data-mode="mine" onclick="switchCalendarMode('mine')">📅 我的日曆</button>
+    <button class="toggle-btn" data-mode="all" onclick="switchCalendarMode('all')">📋 全部任務</button>
+  </div>
+
+  <!-- Person filter dropdown (only shown in 'all' mode) -->
+  <div class="person-filter-wrapper" id="filterWrapper">
+    <button class="filter-toggle-btn" onclick="togglePersonDropdown()">👥 指派人 <span id="filterCountBadge" class="filter-count-badge"></span></button>
+    <div class="filter-dropdown-list" id="personFilterList"></div>
+  </div>
+
+  <!-- Calendar navigation -->
+  <div class="calendar-nav">
+    <button onclick="changeMonth(-1)">&#9664; 上月</button>
+    <span class="current-month" id="currentMonthLabel"></span>
+    <button onclick="changeMonth(1)">下月 &#9654;</button>
+  </div>
+
+  <!-- Calendar grid -->
+  <div class="calendar-grid" id="calendarGrid"></div>
+</div>
+
+<script src="/static/js/calendar.js"></script>
+{% if user_email %}
+<script>currentUserEmail = "{{ user_email }}";</script>
+{% endif %}
+</body>
+</html>

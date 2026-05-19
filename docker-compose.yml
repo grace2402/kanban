@@ -1,0 +1,14 @@
+services:
+  kanban-board-app:
+    build: .
+    container_name: kanban-board-app
+    ports:
+      - "5001:5001"
+    env_file:
+      - .env
+    restart: unless-stopped
+
+networks:
+  default:
+    external:
+      name: teaasia-main_default
