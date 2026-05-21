@@ -107,7 +107,8 @@ function getFirstDayOfMonth(year, month) {
     return new Date(year, month - 1, 1).getDay();
 }
 
-var DAY_NAMES = ['日', '一', '二', '三', '四', '五', '六'];
+// Monday-first order: 一二三四五六日
+var DAY_NAMES = ['一', '二', '三', '四', '五', '六', '日'];
 
 function buildCalendarGrid() {
     var grid = document.getElementById('calendarGrid');
@@ -116,7 +117,7 @@ function buildCalendarGrid() {
     // Clear existing
     grid.innerHTML = '';
 
-    // Day headers
+    // Day headers (Monday first)
     DAY_NAMES.forEach(function(name) {
         var header = document.createElement('div');
         header.className = 'calendar-day-header';
@@ -124,12 +125,14 @@ function buildCalendarGrid() {
         grid.appendChild(header);
     });
 
-    // Calculate offset (Sunday = 0)
+    // Calculate offset: convert Sunday=0..Sat=6 to Mon=0..Sun=6
+    // (day + 6) % 7 maps: Sun(0)->6, Mon(1)->0, Tue(2)->1, ..., Sat(6)->5
     var firstDay = getFirstDayOfMonth(calYear, calMonth);
+    var offset = (firstDay + 6) % 7;
     var daysInMonth = getDaysInMonth(calYear, calMonth);
 
-    // Empty cells before first day
-    for (var i = 0; i < firstDay; i++) {
+    // Empty cells before first day (using Monday-first offset)
+    for (var i = 0; i < offset; i++) {
         var emptyCell = document.createElement('div');
         emptyCell.className = 'calendar-cell empty';
         grid.appendChild(emptyCell);
@@ -313,7 +316,7 @@ function buildCalendarGrid() {
     }
 
     // Fill remaining cells to complete the grid (after last day)
-    var totalCells = firstDay + daysInMonth;
+    var totalCells = offset + daysInMonth;
     var remainder = totalCells % 7;
     if (remainder !== 0) {
         for (var rem = 0; rem < 7 - remainder; rem++) {
