@@ -894,103 +894,148 @@ def delete_calendar_event_from_email():
     
     deleted_count = 0
     
-    # Get user's OAuth token from DB (for Google Calendar API)
+    # ── Collect ALL event IDs to delete (email URL + any orphaned entries) ──
+    db_conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
+    db_cur = db_conn.cursor()
+    
     try:
-        _get_user_token_from_db(session.get('google_id', ''))
-        access_token = session.get('oauth_access_token')
-        if not access_token:
-            flash('OAuth 權限無效，請重新登入', 'warning')
+        # Get any additional event IDs from kanban_calendar_events table (for tasks already deleted)
+        db_cur.execute(
+            "SELECT calendar_event_id FROM kanban_calendar_events WHERE task_id=%s",
+            (task_id,)
+        )
+        orphaned_ids = [r[0] for r in db_cur.fetchall()]
+        
+        # Merge with email-provided IDs (deduplicate)
+        all_calendar_event_ids = list(set(all_calendar_event_ids + orphaned_ids))
+    finally:
+        db_cur.close()
+        db_conn.close()
+    
+    if not all_calendar_event_ids:
+        return jsonify({
+            'status': 'ok',
+            'deleted_count': 0,
+            'message': '沒有需要刪除的 Google Calendar 事件 (可能已清除)'
+        })
+    
+    app.logger.info("Deleting %d calendar event(s) for task %s via email link", len(all_calendar_event_ids), task_id)
+    
+    # ── Try ALL users' OAuth tokens until one succeeds at deletion from Google Calendar API ──
+    # (handles case where current session user != creator of the calendar events)
+    successfully_deleted = []
+    failed_deletions = []
+    last_error = None
+    
+    try:
+        db_conn2 = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
+        db_cur2 = db_conn2.cursor()
+        
+        # Get all users with valid OAuth tokens (access_token + refresh_token)
+        db_cur2.execute("""
+            SELECT oauth_access_token, oauth_refresh_token 
+            FROM kanban_users 
+            WHERE oauth_access_token IS NOT NULL 
+              AND oauth_refresh_token IS NOT NULL
+            ORDER BY id DESC
+        """)
+        user_tokens = db_cur2.fetchall()
+        db_cur2.close()
+        
+        if not user_tokens:
+            flash('找不到有效的 OAuth 權限，無法刪除 Google Calendar 事件', 'warning')
             return redirect(url_for('index'))
         
-        from calendar_service import get_calendar_service
-        cal = get_calendar_service(access_token, google_id=session.get('google_id', ''))
-        if not cal:
-            flash('無法建立 Calendar 服務，OAuth token 可能已過期', 'warning')
-            return redirect(url_for('index'))
+        # Try each user's token until deletion succeeds
+        all_deleted = False
         
-        # ── Collect ALL event IDs to delete (email URL + any orphaned entries) ──
-        db_conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
-        db_cur = db_conn.cursor()
+        for access_token, refresh_token in user_tokens:
+            try:
+                from calendar_service import get_calendar_service
+                
+                cal = get_calendar_service(access_token)
+                if not cal:
+                    app.logger.debug("Token failed verify/refresh for delete-event link")
+                    continue
+                
+                # Try to delete all events with this user's token
+                deleted_this_user = 0
+                errors_for_this_user = []
+                
+                for calendar_event_id in all_calendar_event_ids:
+                    try:
+                        result = cal.delete_event(calendar_event_id)
+                        if result:
+                            deleted_count += 1
+                            deleted_this_user += 1
+                            successfully_deleted.append(calendar_event_id)
+                            app.logger.info("Successfully deleted event '%s' from Google Calendar", calendar_event_id)
+                        else:
+                            errors_for_this_user.append(calendar_event_id)
+                            app.logger.warning("Event '%s' returned False (may not exist or permission denied)", calendar_event_id)
+                    except Exception as e:
+                        errors_for_this_user.append(calendar_event_id)
+                        last_error = str(e)
+                
+                if deleted_this_user > 0:
+                    all_deleted = True
+                    failed_deletions.extend(errors_for_this_user)
+                    app.logger.info("Delete-event link: successfully deleted %d/%d events", 
+                                   deleted_this_user, len(all_calendar_event_ids))
+                    break  # Success! No need to try other users
+            
+            except Exception as e:
+                last_error = str(e)
+                continue
         
+        if not all_deleted and last_error:
+            failed_deletions.extend([eid for eid in all_calendar_event_ids if eid not in successfully_deleted])
+    
+    finally:
+        # ── Clean up kanban_calendar_events table (only remove entries for successfully deleted events) ──
         try:
-            # 1. Get any additional event IDs from kanban_calendar_events table (for tasks already deleted)
-            #    These are orphaned events that _cleanup_calendar_on_delete failed to remove
-            db_cur.execute(
-                "SELECT calendar_event_id FROM kanban_calendar_events WHERE task_id=%s",
-                (task_id,)
-            )
-            orphaned_ids = [r[0] for r in db_cur.fetchall()]
+            db_conn3 = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
+            db_cur3 = db_conn3.cursor()
             
-            # Merge with email-provided IDs (deduplicate)
-            all_calendar_event_ids = list(set(all_calendar_event_ids + orphaned_ids))
-            
-            if not all_calendar_event_ids:
-                return jsonify({
-                    'status': 'ok',
-                    'deleted_count': 0,
-                    'message': '沒有需要刪除的 Google Calendar 事件 (可能已清除)'
-                })
-            
-            app.logger.info("Deleting %d calendar event(s) for task %s via email link", len(all_calendar_event_ids), task_id)
-            
-            # 2. Delete each event from Google Calendar API (idempotent - safe if already deleted)
-            successfully_deleted = []
-            failed_deletions = []
-            for calendar_event_id in all_calendar_event_ids:
-                try:
-                    result = cal.delete_event(calendar_event_id)
-                    if result:
-                        deleted_count += 1
-                        successfully_deleted.append(calendar_event_id)
-                        app.logger.info("Successfully deleted event '%s' from Google Calendar", calendar_event_id)
-                    else:
-                        failed_deletions.append(calendar_event_id)
-                        app.logger.warning("Event '%s' returned False (may not exist or permission denied)", calendar_event_id)
-                except Exception as e:
-                    failed_deletions.append(calendar_event_id)
-                    app.logger.error("Failed to delete event '%s' from Google Calendar: %s", calendar_event_id, str(e))
-            
-            # 3. Clean up kanban_calendar_events table (only remove entries for successfully deleted events)
             if successfully_deleted:
                 placeholders = ','.join(['%s'] * len(successfully_deleted))
-                db_cur.execute(
+                db_cur3.execute(
                     f"DELETE FROM kanban_calendar_events WHERE task_id=%s AND calendar_event_id IN ({placeholders})",
                     [task_id] + successfully_deleted
                 )
             
-            # 4. Also clean [CALENDAR:xxx] markers from description (if task row still exists)
+            # Also clean [CALENDAR:xxx] markers from description (if task row still exists)
             try:
-                import re as _re
-                db_cur.execute("SELECT description FROM kanban_tasks WHERE id=%s", (task_id,))
-                row = db_cur.fetchone()
+                import re as _re2
+                db_cur3.execute("SELECT description FROM kanban_tasks WHERE id=%s", (task_id,))
+                row = db_cur3.fetchone()
                 if row and row[0]:
                     cleaned = str(row[0])
                     for eid in successfully_deleted:
-                        cleaned = _re.sub(r'\[CALENDAR:' + re.escape(eid) + r'\]', '', cleaned).strip()
+                        cleaned = _re2.sub(r'\[CALENDAR:' + re.escape(eid) + r'\]', '', cleaned).strip()
                     if len(successfully_deleted) > 0 and cleaned != row[0]:
-                        db_cur.execute("UPDATE kanban_tasks SET description=%s WHERE id=%s", (cleaned, task_id))
+                        db_cur3.execute("UPDATE kanban_tasks SET description=%s WHERE id=%s", (cleaned, task_id))
             except Exception as e:
                 app.logger.warning("Failed to clean markers for event(s): %s", str(e))
             
             try:
-                db_conn.commit()
+                db_conn3.commit()
             except Exception:
                 pass  # non-critical if description cleanup fails
             
-        finally:
-            db_cur.close()
-            db_conn.close()
-        
-        return jsonify({
-            'status': 'ok',
-            'deleted_count': deleted_count,
-            'message': f'已處理 {deleted_count}/{len(all_calendar_event_ids)} 個 Google Calendar 事件' + (
-                '' if deleted_count > 0 else ' (事件可能已被其他使用者清除)'
-            ) + ('; 有 {} 個刪除失敗，請確認 OAuth 權限'.format(len(failed_deletions)) if failed_deletions else ''),
-        })
-    except Exception as e:
-        app.logger.error("Delete calendar event failed for task %s: %s", task_id, str(e))
-        return jsonify({'error': f'刪除失敗: {str(e)}'}), 500
+            finally:
+                db_cur3.close()
+                db_conn3.close()
+        except Exception as e:
+            app.logger.error("Failed to clean DB for delete-event link: %s", str(e))
+    
+    return jsonify({
+        'status': 'ok',
+        'deleted_count': deleted_count,
+        'message': f'已處理 {deleted_count}/{len(all_calendar_event_ids)} 個 Google Calendar 事件' + (
+            '' if deleted_count > 0 else ' (事件可能已被其他使用者清除)'
+        ) + ('; 有 {} 個刪除失敗，請確認 OAuth 權限'.format(len(failed_deletions)) if failed_deletions else ''),
+    })
 
 
 # ── API: POST /api/tasks/batch-move (batch move tasks to column) ──
@@ -1480,54 +1525,119 @@ def _notify_schedule_change(task_id, creator_email, assignee_email='', title='',
 
 
 def _cleanup_calendar_on_delete(task_id):
-    """Find and delete all Google Calendar events associated with a deleted task."""
-    google_id = session.get('google_id', '')
+    """Find and delete all Google Calendar events associated with a deleted task.
+    
+    Tries ALL users' OAuth tokens from kanban_users table until one succeeds
+    at deleting from Google Calendar API (handles case where deleter != creator).
+    """
+    # Get event IDs first (before any deletion attempts)
+    event_ids = []
     try:
-        _get_user_token_from_db(google_id)
-        from calendar_service import get_calendar_service
-        cal = get_calendar_service(session.get('oauth_access_token'), google_id=google_id)
-        if not cal:
-            return
-        
-        # Get event IDs from dedicated table first, fall back to description markers
         db_conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
         db_cur = db_conn.cursor()
-        try:
-            # Primary source: kanban_calendar_events table (reliable)
-            db_cur.execute("SELECT calendar_event_id FROM kanban_calendar_events WHERE task_id=%s", (task_id,))
-            event_ids = [r[0] for r in db_cur.fetchall()]
-            
-            if not event_ids:
-                # Fallback: parse [CALENDAR:xxx] markers from description
-                import re as _re
-                db_cur.execute("SELECT description FROM kanban_tasks WHERE id=%s", (task_id,))
-                row = db_cur.fetchone()
-                if row and row[0]:
-                    event_ids = _re.findall(r'\[CALENDAR:([a-zA-Z0-9_-]+)\]', str(row[0]))
-            
-            for eid in event_ids:
-                try:
-                    cal.delete_event(eid)
-                except Exception as e:
-                    app.logger.warning("Event '%s' may not exist (already cleaned up): %s", eid, str(e))
-            
-            # Clean up from both tables
-            if event_ids:
-                db_cur.execute("DELETE FROM kanban_calendar_events WHERE task_id=%s", (task_id,))
-                # Also clean markers from description for backward compatibility
-                import re as _re2
-                db_cur.execute("SELECT description FROM kanban_tasks WHERE id=%s", (task_id,))
-                row = db_cur.fetchone()
-                if row and row[0]:
-                    cleaned = _re2.sub(r'\[CALENDAR:[a-zA-Z0-9_-]+\]', '', str(row[0])).strip()
-                    if cleaned != row[0]:
-                        db_cur.execute("UPDATE kanban_tasks SET description=%s WHERE id=%s", (cleaned, task_id))
-                db_conn.commit()
-        finally:
-            db_cur.close()
-            db_conn.close()
+        
+        # Primary source: kanban_calendar_events table (reliable)
+        db_cur.execute("SELECT calendar_event_id FROM kanban_calendar_events WHERE task_id=%s", (task_id,))
+        event_ids = [r[0] for r in db_cur.fetchall()]
+        
+        if not event_ids:
+            # Fallback: parse [CALENDAR:xxx] markers from description
+            import re as _re2
+            db_cur.execute("SELECT description FROM kanban_tasks WHERE id=%s", (task_id,))
+            row = db_cur.fetchone()
+            if row and row[0]:
+                event_ids = _re2.findall(r'\[CALENDAR:([a-zA-Z0-9_-]+)\]', str(row[0]))
+        
+        app.logger.info("Cleanup task %s: found %d calendar event(s)", task_id, len(event_ids))
     except Exception as e:
-        app.logger.warning("Calendar cleanup failed for task %s: %s", task_id, str(e))
+        app.logger.error("Failed to get calendar IDs for task %s: %s", task_id, str(e))
+    
+    if not event_ids:
+        # Nothing to delete from Google Calendar
+        return
+    
+    # ── Try ALL users' OAuth tokens until one succeeds at deletion ──
+    try:
+        from sqlalchemy import text as _text
+        db_conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
+        db_cur = db_conn.cursor()
+        
+        # Get all users with valid OAuth tokens (access_token + refresh_token)
+        db_cur.execute("""
+            SELECT oauth_access_token, oauth_refresh_token 
+            FROM kanban_users 
+            WHERE oauth_access_token IS NOT NULL 
+              AND oauth_refresh_token IS NOT NULL
+            ORDER BY id DESC
+        """)
+        user_tokens = db_cur.fetchall()
+        db_cur.close()
+        
+        if not user_tokens:
+            app.logger.warning("No users with valid OAuth tokens found for calendar cleanup task %s", task_id)
+            return
+        
+        # Try each user's token until deletion succeeds
+        all_deleted = False
+        last_error = None
+        
+        for access_token, refresh_token in user_tokens:
+            try:
+                from calendar_service import get_calendar_service
+                
+                cal = get_calendar_service(access_token)
+                if not cal:
+                    app.logger.debug("Token failed verify/refresh for cleanup task %s", task_id)
+                    continue
+                
+                # Try to delete all events with this user's token
+                deleted_this_user = 0
+                for eid in event_ids:
+                    try:
+                        result = cal.delete_event(eid)
+                        if result:
+                            deleted_this_user += 1
+                            app.logger.info("Deleted Google Calendar event '%s' (user token)", eid)
+                    except Exception as e:
+                        last_error = str(e)
+                
+                if deleted_this_user > 0:
+                    all_deleted = True
+                    app.logger.info("Cleanup task %s: successfully deleted %d/%d events", 
+                                   task_id, deleted_this_user, len(event_ids))
+                    break  # Success! No need to try other users
+            
+            except Exception as e:
+                last_error = str(e)
+                continue
+        
+        if not all_deleted and last_error:
+            app.logger.warning("Calendar cleanup for task %s failed after trying %d tokens. Last error: %s", 
+                             task_id, len(user_tokens), last_error)
+        
+    except Exception as e:
+        app.logger.error("Failed to iterate OAuth tokens for calendar cleanup task %s: %s", task_id, str(e))
+    
+    # ── Clean up kanban_calendar_events table and description markers ──
+    try:
+        db_conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
+        db_cur = db_conn.cursor()
+        
+        if event_ids:
+            db_cur.execute("DELETE FROM kanban_calendar_events WHERE task_id=%s", (task_id,))
+            
+            # Clean [CALENDAR:xxx] markers from description for backward compatibility
+            import re as _re3
+            db_cur.execute("SELECT description FROM kanban_tasks WHERE id=%s", (task_id,))
+            row = db_cur.fetchone()
+            if row and row[0]:
+                cleaned = _re3.sub(r'\[CALENDAR:[a-zA-Z0-9_-]+\]', '', str(row[0])).strip()
+                if cleaned != row[0]:
+                    db_cur.execute("UPDATE kanban_tasks SET description=%s WHERE id=%s", (cleaned, task_id))
+            
+            db_conn.commit()
+    except Exception as e:
+        app.logger.error("Failed to clean DB records for calendar cleanup task %s: %s", task_id, str(e))
 
 
 if __name__ == '__main__':
