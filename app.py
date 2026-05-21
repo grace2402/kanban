@@ -931,15 +931,15 @@ def delete_calendar_event_from_email():
         db_conn2 = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
         db_cur2 = db_conn2.cursor()
         
-        # Get all users with valid OAuth tokens (access_token + refresh_token)
+        # Get all users with valid OAuth tokens (access_token + refresh_token), including google_id for token matching
         db_cur2.execute("""
-            SELECT oauth_access_token, oauth_refresh_token 
+            SELECT google_id, oauth_access_token, oauth_refresh_token 
             FROM kanban_users 
             WHERE oauth_access_token IS NOT NULL 
               AND oauth_refresh_token IS NOT NULL
-            ORDER BY id DESC
+            ORDER BY google_id DESC
         """)
-        user_tokens = db_cur2.fetchall()
+        user_tokens = db_cur2.fetchall()  # each row: (google_id, access_token, refresh_token)
         db_cur2.close()
         
         if not user_tokens:
@@ -949,11 +949,11 @@ def delete_calendar_event_from_email():
         # Try each user's token until deletion succeeds
         all_deleted = False
         
-        for access_token, refresh_token in user_tokens:
+        for google_id, access_token, refresh_token in user_tokens:
             try:
                 from calendar_service import get_calendar_service
                 
-                cal = get_calendar_service(access_token)
+                cal = get_calendar_service(access_token, google_id=google_id)  # pass google_id for correct token refresh matching
                 if not cal:
                     app.logger.debug("Token failed verify/refresh for delete-event link")
                     continue
@@ -1454,11 +1454,14 @@ def _notify_and_calendar_sync(task_id, creator_email, assignee_email, title='', 
     
     # Create Google Calendar event with all assignees (uses DB-stored token)
     google_id = session.get('google_id', '')
+    app.logger.info("[CALENDAR_SYNC] task=%s assignee=%s start_time=%s google_id=%s", task_id, assignee_email, start_time, google_id)
     if assignee_email and start_time:
         try:
             _get_user_token_from_db(google_id)
             from calendar_service import get_calendar_service, create_event_with_all_attendees
-            cal = get_calendar_service(session.get('oauth_access_token'), google_id=google_id)
+            token = session.get('oauth_access_token')
+            app.logger.info("[CALENDAR_SYNC] oauth_token=%s cal_before=%s", 'yes' if token else 'no', google_id)
+            cal = get_calendar_service(token, google_id=google_id)
             if cal:
                 attendees = [e.strip() for e in str(assignee_email).split(',') if e.strip()]
                 event_id = cal.create_event(
@@ -1562,15 +1565,15 @@ def _cleanup_calendar_on_delete(task_id):
         db_conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
         db_cur = db_conn.cursor()
         
-        # Get all users with valid OAuth tokens (access_token + refresh_token)
+        # Get all users with valid OAuth tokens (access_token + refresh_token), including google_id for token matching
         db_cur.execute("""
-            SELECT oauth_access_token, oauth_refresh_token 
+            SELECT google_id, oauth_access_token, oauth_refresh_token 
             FROM kanban_users 
             WHERE oauth_access_token IS NOT NULL 
               AND oauth_refresh_token IS NOT NULL
-            ORDER BY id DESC
+            ORDER BY google_id DESC
         """)
-        user_tokens = db_cur.fetchall()
+        user_tokens = db_cur.fetchall()  # each row: (google_id, access_token, refresh_token)
         db_cur.close()
         
         if not user_tokens:
@@ -1581,11 +1584,11 @@ def _cleanup_calendar_on_delete(task_id):
         all_deleted = False
         last_error = None
         
-        for access_token, refresh_token in user_tokens:
+        for google_id, access_token, refresh_token in user_tokens:
             try:
                 from calendar_service import get_calendar_service
                 
-                cal = get_calendar_service(access_token)
+                cal = get_calendar_service(access_token, google_id=google_id)  # pass google_id for correct token refresh matching
                 if not cal:
                     app.logger.debug("Token failed verify/refresh for cleanup task %s", task_id)
                     continue

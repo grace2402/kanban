@@ -70,8 +70,12 @@ class _CalendarAPI:
         }
         
         if attendee_emails:
-            attendees = [{'email': e.strip()} for e in str(attendee_emails).split(',') if e.strip()]
-            body['attendees'] = attendees
+            # Handle both string (comma-separated) and list inputs
+            if isinstance(attendee_emails, str):
+                email_list = [e.strip() for e in attendee_emails.split(',') if e.strip()]
+            else:
+                email_list = [str(e).strip() for e in attendee_emails if e]
+            body['attendees'] = [{'email': e} for e in email_list]
         
         try:
             r = requests.post(
