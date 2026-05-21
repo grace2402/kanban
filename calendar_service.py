@@ -493,6 +493,8 @@ def delete_calendar_events_for_task(db_session, task_id):
 def resync_task_schedule(db_session, google_id, task_id):
     """When task schedule changes: delete old events and create new ones.
     
+    Also updates kanban_calendar_events table to keep it in sync with Google Calendar.
+    
     Args:
         db_session: SQLAlchemy session
         google_id: Current user's Google ID for token lookup
@@ -520,11 +522,30 @@ def resync_task_schedule(db_session, google_id, task_id):
         if not assignee_emails_str:
             return False
         
-        # Delete old events
-        delete_calendar_events_for_task(db_session, task_id)
+        # Step 1: Clean up old records from kanban_calendar_events table FIRST
+        try:
+            db_session.execute(
+                __import__('sqlalchemy').text("DELETE FROM kanban_calendar_events WHERE task_id=:tid"),
+                {'tid': task_id}
+            )
+            db_session.commit()
+        except Exception as e:
+            print(f"[resync] Failed to clean kanban_calendar_events for task {task_id}: {e}")
         
-        # Create new event with all attendees
-        create_event_with_db_tokens(
+        # Step 2: Delete old [CALENDAR:] markers from description  
+        try:
+            db_session.execute(
+                __import__('sqlalchemy').text(
+                    "UPDATE kanban_tasks SET description = regexp_replace(description, '\\[CALENDAR:[a-zA-Z0-9_-]+\\]', '', 'g') WHERE id=:tid"
+                ),
+                {'tid': task_id}
+            )
+            db_session.commit()
+        except Exception:
+            pass
+        
+        # Step 3: Create new event with all attendees  
+        new_event_id = create_event_with_db_tokens(
             db_session=db_session,
             google_id=google_id,
             task_id=task_id,
@@ -535,8 +556,22 @@ def resync_task_schedule(db_session, google_id, task_id):
             end_time=et.isoformat() if hasattr(et, 'isoformat') and et else (st.isoformat() if hasattr(st, 'isoformat') else str(st))
         )
         
+        # Step 4: Store new event ID in kanban_calendar_events table
+        if new_event_id:
+            try:
+                db_session.execute(
+                    __import__('sqlalchemy').text(
+                        "INSERT INTO kanban_calendar_events (task_id, calendar_event_id, summary) VALUES (:tid,:eid,:summary)"
+                    ),
+                    {'tid': task_id, 'eid': new_event_id, 'summary': title or ''}
+                )
+                db_session.commit()
+            except Exception as e:
+                print(f"[resync] Failed to store event ID {new_event_id} for task {task_id}: {e}")
+        
         return True
         
     except Exception as e:
         print(f"Schedule resync failed for task {task_id}: {e}")
         return False
+
