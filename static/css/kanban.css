@@ -12,6 +12,7 @@
     --text-secondary: #4a5568;
     --border-color: rgba(148, 163, 184, 0.35);
     --accent-blue: #5ba4e6;
+    --accent-green: #22c55e;
     --gradient-start: rgba(255, 255, 255, 0.7);
     --gradient-end: rgba(239, 246, 255, 0.85);
 }
@@ -855,3 +856,320 @@ body {
     color: #d98a1e;
 }
 
+/* ==========================================
+   Phase 5: Top search bar & filter toolbar
+   ========================================== */
+.top-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    background: rgba(255,255,255,0.4);
+    border-bottom: 1px solid var(--border-color);
+    flex-wrap: wrap;
+}
+
+.top-bar #searchInput {
+    flex: 1;
+    min-width: 200px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    background: rgba(255,255,255,0.7);
+    color: #1e293b;
+    font-size: 14px;
+}
+
+.top-bar #searchInput::placeholder { color: #94a3b8; }
+.top-bar #searchInput:focus { outline: none; border-color: var(--accent-blue); box-shadow: 0 0 0 2px rgba(91,164,230,0.2); }
+
+.top-bar select#priorityFilter {
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    background: rgba(255,255,255,0.7);
+    color: #1e293b;
+    font-size: 13px;
+}
+
+.label-filter-chip.active { opacity: 1; box-shadow: 0 0 0 2px var(--accent-blue); }
+
+/* Label filter chips */
+.label-filter-bar {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.label-filter-chip {
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    opacity: 0.7;
+    transition: all 0.2s;
+    user-select: none;
+}
+
+.label-filter-chip:hover { opacity: 1; transform: scale(1.05); }
+.label-filter-chip.active { opacity: 1; box-shadow: 0 0 0 2px rgba(255,255,255,0.3); }
+
+/* ==========================================
+   Phase 5: Batch operations toolbar
+   ========================================== */
+.batch-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    background: rgba(239,68,68,0.1);
+    border-bottom: 1px solid rgba(239,68,68,0.3);
+}
+
+.batch-toolbar .btn-batch-move {
+    padding: 6px 14px;
+    background: var(--accent-blue);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.batch-toolbar .btn-batch-delete {
+    padding: 6px 14px;
+    background: #ef4444;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.batch-toolbar .btn-clear-selection {
+    padding: 6px 14px;
+    background: rgba(255,255,255,0.8);
+    color: #4a5568;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.batch-toolbar select#batchMoveColumn {
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    background: rgba(255,255,255,0.7);
+    color: #1e293b;
+    font-size: 13px;
+}
+
+#selectedCount { margin-right: auto; color: #e6a817; font-weight: 500; }
+
+/* Batch mode toggle */
+.batch-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.batch-toggle input { accent-color: var(--accent-blue); }
+
+/* ==========================================
+   Phase 5: Card checkbox for batch mode
+   ========================================== */
+.kanban-card .card-checkbox-wrapper {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    z-index: 2;
+}
+
+.kanban-card .card-checkbox-wrapper input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent-blue);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.kanban-card:hover .card-checkbox-wrapper input[type="checkbox"],
+.batch-mode .kanban-card .card-checkbox-wrapper input[type="checkbox"] {
+    opacity: 1;
+}
+
+/* ==========================================
+   Phase 5: Label tags on cards & in modal
+   ========================================== */
+.label-tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #fff;
+    margin-right: 3px;
+    line-height: 1.4;
+}
+
+.label-tag-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.label-tag-pill .remove-label {
+    background: none;
+    border: none;
+    color: rgba(0,0,0,0.4);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0 0 0 3px;
+}
+
+/* ==========================================
+   Phase 5: Subtask progress bar on cards
+   ========================================== */
+.subtask-progress-wrapper {
+    margin-top: 4px;
+}
+
+.subtask-progress-bar {
+    height: 4px;
+    border-radius: 2px;
+    background: #e2e8f0;
+    overflow: hidden;
+}
+
+.subtask-progress-fill {
+    height: 100%;
+    border-radius: 2px;
+    background: var(--accent-green);
+    transition: width 0.3s ease;
+}
+
+.subtask-count-text {
+    font-size: 10px;
+    color: #94a3b8;
+    margin-top: 2px;
+}
+
+/* ==========================================
+   Phase 5: Card expanded sections (subtasks & activity)
+   ========================================== */
+.subtask-section, .activity-section {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-color);
+}
+
+.subtask-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+}
+
+.subtask-item input[type="checkbox"] { accent-color: var(--accent-green); cursor: pointer; }
+
+.subtask-item .subtask-title {
+    flex: 1;
+    font-size: 13px;
+}
+
+.subtask-item.completed .subtask-title {
+    text-decoration: line-through;
+    color: #cbd5e1;
+}
+
+.subtask-item button.delete-subtask-btn {
+    background: none;
+    border: none;
+    color: #ef4444;
+    cursor: pointer;
+    font-size: 13px;
+    opacity: 0.6;
+}
+
+.subtask-item button.delete-subtask-btn:hover { opacity: 1; }
+
+#newSubtaskInput {
+    margin-top: 8px;
+    padding: 6px 10px;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    background: rgba(255,255,255,0.7);
+    color: #1e293b;
+    font-size: 13px;
+    width: 100%;
+}
+
+#newSubtaskInput:focus { outline: none; border-color: var(--accent-blue); }
+
+/* ==========================================
+   Phase 5: Activity timeline
+   ========================================== */
+.activity-timeline {
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.activity-entry {
+    display: flex;
+    gap: 8px;
+    padding: 6px 0;
+    font-size: 12px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.activity-entry:last-child { border-bottom: none; }
+
+.activity-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-top: 4px;
+    flex-shrink: 0;
+}
+
+.activity-dot.created { background: #10b981; }
+.activity-dot.updated { background: #3b82f6; }
+.activity-dot.deleted { background: #ef4444; }
+.activity-dot.status_changed { background: #f59e0b; }
+.activity-dot.label_added { background: #a855f7; }
+
+.activity-details { flex: 1; }
+.activity-field { font-weight: 600; color: var(--accent-blue); }
+.activity-user { color: #94a3b8; font-size: 11px; }
+.activity-time { color: #cbd5e1; font-size: 10px; margin-left: auto; flex-shrink: 0; }
+
+/* ==========================================
+   Phase 5: Label search dropdown in modal
+   ========================================== */
+.label-search-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.label-search-option:hover { background: rgba(91,164,230,0.08); }
+
+/* ==========================================
+   Utility: hidden class for Phase 5 HTML elements
+   ========================================== */
+.hidden { display: none !important; }

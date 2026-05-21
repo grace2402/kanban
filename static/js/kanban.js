@@ -243,9 +243,24 @@ function syncFromServer() {
 }
 
 if (document.getElementById('cardModal')) {
-document.getElementById('cardModal').addEventListener('click', function(e) {
-    if (e.target === this) closeModal();
-});
+    document.getElementById('cardModal').addEventListener('click', function(e) {
+        if (e.target === this) closeModal();
+        // Save/Create button — delegate click to saveTask()
+        // e.target might be a text node or child element inside the button,
+        // so use elementFromPoint for reliable detection
+        var target = e.target;
+        while (target && target.nodeType !== 1) {
+            target = target.parentNode;
+        }
+        if (!target || target === this) return;
+        
+        var saveBtn = target.closest('.btn-save');
+        if (saveBtn) {
+            e.preventDefault();
+            e.stopPropagation();
+            saveTask();
+        }
+    });
 }
 
 document.addEventListener('keydown', function(e) {

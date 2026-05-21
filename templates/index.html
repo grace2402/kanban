@@ -4,8 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Kanban Board - Monitoring System</title>
-  <link rel="stylesheet" href="/static/css/kanban.css">
-  <script src="/static/js/kanban.js"></script>
+  <link rel="stylesheet" href="/static/css/kanban.css?v2">
+  <script src="/static/js/kanban.js?v6"></script>
+  <script src="/static/js/kanban-p5.js?v1"></script>
 </head>
 <body>
 
@@ -15,6 +16,10 @@
     {% if user_email %}
       <span class="user-info">{{ user_email }}</span>
       <a href="/calendar" class="toggle-btn" style="margin-right:8px;">&#x1f4c5; 行事曆</a>
+      <label class="batch-toggle">
+        <input type="checkbox" id="batchModeToggle" onchange="toggleBatchMode()">
+        &#x2611; 批次模式
+      </label>
       <a href="/logout" class="btn-logout">登出</a>
     {% else %}
       <span class="nav-note">請登入以使用看板功能</span>
@@ -22,6 +27,37 @@
     {% endif %}
   </div>
 </nav>
+
+<!-- Search & Filter Top Bar -->
+<div class="top-bar" id="topBar">
+  <input type="text" id="searchInput" placeholder="&#x1f50d; 搜尋任務..." oninput="filterAndRender()">
+  <select id="priorityFilter" onchange="filterAndRender()">
+    <option value="">所有優先級</option>
+    <option value="high">&#x1f534; 高</option>
+    <option value="medium">&#x1f7e1; 中</option>
+    <option value="low">&#x26aa; 低</option>
+  </select>
+  <!-- Label filter chips -->
+  <div class="label-filter-bar" id="labelFilterBar">
+    <!-- Populated by JS from /api/labels -->
+  </div>
+</div>
+
+<!-- Batch Operations Toolbar (hidden unless batch mode active) -->
+<div class="batch-toolbar hidden" id="batchToolbar">
+  <span id="selectedCount">0 個已選取</span>
+  <select id="batchMoveColumn">
+    <option value="">移至...</option>
+    <option value="backlog">&#x1f4cb; Backlog</option>
+    <option value="todo">&#x1f4dd; To Do</option>
+    <option value="in_progress">&#x1f528; In Progress</option>
+    <option value="review">&#x1f50d; Review</option>
+    <option value="done">&#x2705; Done</option>
+  </select>
+  <button class="btn-batch-move" onclick="doBatchMove()">&#x1f4c4; 移動</button>
+  <button class="btn-batch-delete" onclick="doBatchDelete()">&#x1f5d1;&#xfe0e; 刪除</button>
+  <button class="btn-clear-selection" onclick="clearSelection()">&#x2715; 取消選取</button>
+</div>
 
 <div class="kanban-wrapper" id="kanbanWrapper">
   <div class="kanban-board" id="kanbanBoard">
@@ -63,21 +99,31 @@
   </div>
 </div>
 
-<!-- Modal -->
+<!-- Main Modal (Task Add/Edit) -->
 <div class="modal-overlay" id="cardModal">
-  <div class="modal-box">
+  <div class="modal-box modal-large">
     <h3 id="modalTitle">新增任務</h3>
 
     <!-- Basic fields -->
-    <div class="form-group"><label>標題</label><input type="text" id="taskTitle" placeholder="輸入任務標題"></div>
+    <div class="form-row">
+      <div class="form-group"><label>標題</label><input type="text" id="taskTitle" placeholder="輸入任務標題"></div>
+      <div class="form-group">
+        <label>優先級</label>
+        <select id="taskPriority">
+          <option value="high">&#x1f534; 高</option>
+          <option value="medium" selected>&#x1f7e1; 中</option>
+          <option value="low">&#x26aa; 低</option>
+        </select>
+      </div>
+    </div>
     <div class="form-group"><label>描述</label><textarea id="taskDesc" placeholder="輸入任務描述"></textarea></div>
-    <div class="form-group">
-      <label>優先級</label>
-      <select id="taskPriority">
-        <option value="high">高</option>
-        <option value="medium" selected>中</option>
-        <option value="low">低</option>
-      </select>
+
+    <!-- Labels section -->
+    <div class="form-group form-labels">
+      <label>&#x1f3ff; 標籤（可多選）</label>
+      <input type="text" id="taskLabelInput" placeholder="搜尋或輸入新標籤..." autocomplete="off">
+      <div id="labelSearchDropdown" class="assignee-dropdown hidden"></div>
+      <div id="labelBadgesContainer" style="display:none; flex-wrap:wrap; gap:4px;"></div>
     </div>
 
     <!-- Assignee search (Phase 3: multi-select) -->
@@ -101,9 +147,38 @@
       </div>
     </div>
 
+    <!-- Subtasks section (edit mode) -->
+    <div class="form-group form-subtasks hidden" id="subtaskSection">
+      <label>&#x1f4dd; 子任務</label>
+      <div id="subtaskList"></div>
+      <input type="text" id="newSubtaskInput" placeholder="+ 新增子任務..." onkeydown="if(event.key==='Enter')addSubtask()">
+    </div>
+
+    <!-- Activity log (edit mode) -->
+    <div class="form-group form-activity hidden" id="activitySection">
+      <label>&#x1f570;&#xfe0f; 活動紀錄</label>
+      <div id="activityLogContainer"></div>
+    </div>
+
     <div class="modal-actions">
       <button class="btn-cancel" onclick="closeModal()">取消</button>
-      <button class="btn-save" onclick="saveTask()">&#x1f4be; 儲存</button>
+      <button class="btn-save" onclick="saveTask(); return false;">&#x1f4be; 儲存</button>
+    </div>
+  </div>
+</div>
+
+<!-- Label Management Modal -->
+<div class="modal-overlay hidden" id="labelManageModal">
+  <div class="modal-box modal-small">
+    <h3>&#x1f3ff; 管理標籤</h3>
+    <div id="labelManageList"></div>
+    <form onsubmit="createNewLabel(event)" style="display:flex;gap:8px;margin-top:12px;">
+      <input type="text" id="newLabelName" placeholder="新標籤名稱" required>
+      <input type="color" id="newLabelColor" value="#3B82F6">
+      <button type="submit" class="btn-save btn-sm">新增</button>
+    </form>
+    <div style="text-align:right;margin-top:12px;">
+      <button class="btn-cancel" onclick="document.getElementById('labelManageModal').classList.add('hidden')">關閉</button>
     </div>
   </div>
 </div>
