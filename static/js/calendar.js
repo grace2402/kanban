@@ -10,9 +10,20 @@ var currentUserEmail = '';  // Set by template via data attribute
 var selectedPersonEmails = []; // Multi-select array for 'all' mode
 
 function initCalendar() {
-    var now = new Date();
-    calYear = now.getFullYear();
-    calMonth = now.getMonth() + 1;
+    // Try to read year/month from URL query params first
+    var params = new URLSearchParams(window.location.search);
+    var urlYear = parseInt(params.get('year'));
+    var urlMonth = parseInt(params.get('month'));
+    
+    if (urlYear && urlMonth >= 1 && urlMonth <= 12) {
+        calYear = urlYear;
+        calMonth = urlMonth;
+    } else {
+        // Fall back to current date
+        var now = new Date();
+        calYear = now.getFullYear();
+        calMonth = now.getMonth() + 1;
+    }
     renderCalendar();
 }
 

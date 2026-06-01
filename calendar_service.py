@@ -89,13 +89,15 @@ class _CalendarAPI:
         return False
     
     def delete_event(self, event_id):
-        """Delete an existing Google Calendar event."""
+        """Delete an existing Google Calendar event. Returns True on success or 410 (already deleted)."""
         try:
             r = requests.delete(
                 f'https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}?sendNotifications=true',
                 headers=self.headers, timeout=10
             )
-            return r.ok
+            # Google returns HTTP 410 when deleting an already-deleted event.
+            # Treat 410 as idempotent success — the event is gone either way.
+            return r.ok or r.status_code == 410
         except Exception:
             return False
     
@@ -379,11 +381,11 @@ def _get_effective_token(session):
     return None
 
 
-def create_event_with_db_tokens(db_session, google_id, task_id, title, description, assignee_emails, start_time, end_time):
+def create_event_with_db_tokens(db_uri, google_id, task_id, title, description, assignee_emails, start_time, end_time):
     """Create calendar event using token stored in kanban_users DB table.
     
     Args:
-        db_session: SQLAlchemy session
+        db_uri: Database connection string (replaces db_session for consistency)
         google_id: User's Google ID (for DB lookup)
         task_id: Kanban task ID
         title: Task title for event summary
@@ -397,45 +399,56 @@ def create_event_with_db_tokens(db_session, google_id, task_id, title, descripti
     if not google_id:
         return None
     
-    # Fetch user's stored token from DB
     try:
-        User = db_session.get_bind().execute(
-            __import__('sqlalchemy').text('SELECT oauth_access_token, oauth_refresh_token FROM kanban_users WHERE google_id=:gid LIMIT 1')
-        ).fetchone()
-    except Exception:
+        from sqlalchemy import create_engine as _ce
+        # Fetch user's stored token from DB using raw connection (matches app.py pattern)
+        conn = _ce(db_uri).raw_connection()
+        cur = conn.cursor()
+        try:
+            row = cur.execute(
+                "SELECT oauth_access_token, oauth_refresh_token FROM kanban_users WHERE google_id=:gid LIMIT 1",
+                {'gid': google_id}
+            ).fetchone()
+            
+            if not row or not row[0]:
+                return None
+            
+            access_token = row[0]
+            refresh_token = row[1] or ''
+        finally:
+            cur.close()
+        
+        # Verify & refresh token
+        cal = _CalendarAPI(access_token)
+        if not cal.verify_token():
+            new_token = _refresh_google_token(refresh_token)
+            if new_token:
+                access_token = new_token
+                try:
+                    conn2 = _ce(db_uri).raw_connection()
+                    cur2 = conn2.cursor()
+                    cur2.execute(
+                        "UPDATE kanban_users SET oauth_access_token=:t WHERE google_id=:gid",
+                        {'t': new_token, 'gid': google_id}
+                    )
+                    conn2.commit()
+                except Exception:
+                    pass
+        
+        cal = _CalendarAPI(access_token)
+        event_id = cal.create_event(
+            summary=f"📋 {title or f'Task #{task_id}'}",
+            description=f"{description}\nKanban URL: {APP_URL}/#/detail/{task_id}",
+            start_time=start_time,
+            end_time=end_time,
+            attendee_emails=assignee_emails if isinstance(assignee_emails, list) else assignee_emails
+        )
+        
+        return event_id
+        
+    except Exception as e:
+        app.logger.error("create_event_with_db_tokens failed for task %s: %s", task_id, str(e))
         return None
-    
-    if not User or not User[0]:
-        return None
-    
-    access_token = User[0]
-    
-    # Verify & refresh token
-    cal = _CalendarAPI(access_token)
-    if not cal.verify_token():
-        refresh_token = User[1] or ''
-        new_token = _refresh_google_token(refresh_token)
-        if new_token:
-            access_token = new_token
-            try:
-                db_session.execute(
-                    __import__('sqlalchemy').text('UPDATE kanban_users SET oauth_access_token=:t WHERE google_id=:gid'),
-                    {'t': new_token, 'gid': google_id}
-                )
-                db_session.commit()
-            except Exception:
-                pass
-    
-    cal = _CalendarAPI(access_token)
-    event_id = cal.create_event(
-        summary=f"📋 {title or f'Task #{task_id}'}",
-        description=f"{description}\nKanban URL: {APP_URL}/#/detail/{task_id}",
-        start_time=start_time,
-        end_time=end_time,
-        attendee_emails=assignee_emails if isinstance(assignee_emails, list) else assignee_emails
-    )
-    
-    return event_id
 
 
 def delete_calendar_events_for_task(db_session, task_id):
@@ -494,63 +507,64 @@ def delete_calendar_events_for_task(db_session, task_id):
     return deleted_count
 
 
-def resync_task_schedule(db_session, google_id, task_id):
+def resync_task_schedule(google_id, task_id):
     """When task schedule changes: delete old events and create new ones.
     
     Also updates kanban_calendar_events table to keep it in sync with Google Calendar.
     
     Args:
-        db_session: SQLAlchemy session
         google_id: Current user's Google ID for token lookup
         task_id: Task being updated
     
-    Returns True if resync succeeded.
+    Returns True if resync succeeded, False otherwise.
     """
     try:
-        # Get current task data
-        row = db_session.execute(
-            __import__('sqlalchemy').text(
-                'SELECT title, description, start_time, end_time, assignee_email FROM kanban_tasks WHERE id=:tid LIMIT 1'
-            ),
-            {'tid': task_id}
-        ).fetchone()
+        from sqlalchemy import create_engine as _ce
+        db_uri = os.environ.get('DATABASE_URL', '') or os.environ.get('SQLALCHEMY_DATABASE_URI', '')
         
-        if not row or not row[2]:  # No start_time
-            return False
-        
-        title = row[0]
-        desc = str(row[1]) if row[1] else ''
-        st, et = row[2], row[3]
-        assignee_emails_str = str(row[4]) if row[4] else None
-        
-        if not assignee_emails_str:
-            return False
+        # Get current task data via raw connection (matches app.py pattern)
+        conn = _ce(db_uri).raw_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "SELECT title, description, start_time, end_time, assignee_email FROM kanban_tasks WHERE id=:tid LIMIT 1",
+                {'tid': task_id}
+            )
+            row = cur.fetchone()
+            
+            if not row or not row[2]:  # No start_time
+                return False
+            
+            title = row[0]
+            desc = str(row[1]) if row[1] else ''
+            st, et = row[2], row[3]
+            assignee_emails_str = str(row[4]) if row[4] else None
+            
+            if not assignee_emails_str:
+                return False
+            
+        finally:
+            cur.close()
         
         # Step 1: Clean up old records from kanban_calendar_events table FIRST
+        conn2 = _ce(db_uri).raw_connection()
+        cur2 = conn2.cursor()
         try:
-            db_session.execute(
-                __import__('sqlalchemy').text("DELETE FROM kanban_calendar_events WHERE task_id=:tid"),
+            cur2.execute("DELETE FROM kanban_calendar_events WHERE task_id=:tid", {'tid': task_id})
+            conn2.commit()
+            
+            # Step 2: Delete old [CALENDAR:] markers from description  
+            cur2.execute(
+                "UPDATE kanban_tasks SET description = regexp_replace(description, '\\\\[CALENDAR:[a-zA-Z0-9_-]+\\\\]', '', 'g') WHERE id=:tid",
                 {'tid': task_id}
             )
-            db_session.commit()
-        except Exception as e:
-            print(f"[resync] Failed to clean kanban_calendar_events for task {task_id}: {e}")
-        
-        # Step 2: Delete old [CALENDAR:] markers from description  
-        try:
-            db_session.execute(
-                __import__('sqlalchemy').text(
-                    "UPDATE kanban_tasks SET description = regexp_replace(description, '\\[CALENDAR:[a-zA-Z0-9_-]+\\]', '', 'g') WHERE id=:tid"
-                ),
-                {'tid': task_id}
-            )
-            db_session.commit()
-        except Exception:
-            pass
+            conn2.commit()
+        finally:
+            cur2.close()
         
         # Step 3: Create new event with all attendees  
         new_event_id = create_event_with_db_tokens(
-            db_session=db_session,
+            db_uri=db_uri,
             google_id=google_id,
             task_id=task_id,
             title=title,

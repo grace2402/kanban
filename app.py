@@ -294,7 +294,57 @@ def calendar():
     return render_template('calendar.html', user_email=user_email)
 
 
-# ── API: GET /api/calendar (monthly tasks for calendar view) ──
+# ── API: GET /api/tasks (list all tasks with labels) ──
+@csrf.exempt
+@app.route('/api/tasks', methods=['GET'])
+def get_all_tasks():
+    """Return all kanban tasks with their labels."""
+    conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
+    cur = conn.cursor()
+    try:
+        # Get all tasks ordered by column + sort_order
+        cur.execute("""SELECT id, title, description, column_name, priority, assignee_email, start_time, end_time, sort_order
+                       FROM kanban_tasks ORDER BY column_name, sort_order""")
+        rows = cur.fetchall()
+        
+        tasks = []
+        for r in rows:
+            tid, title, desc, col, priority, assignee, start_t, end_t, sort_o = r
+            
+            # Get labels for this task
+            try:
+                cur2 = conn.cursor()
+                cur2.execute("""SELECT l.name, l.color FROM kanban_labels l
+                                JOIN task_labels tl ON tl.label_id=l.id WHERE tl.task_id=%s""", (tid,))
+                labels = [{'name': lr[0], 'color': lr[1]} for lr in cur2.fetchall()]
+                cur2.close()
+            except Exception:
+                labels = []
+            
+            st_str = start_t.isoformat() if start_t else None
+            et_str = end_t.isoformat() if end_t else None
+            
+            tasks.append({
+                'id': str(tid),
+                'title': title or '',
+                'description': desc or '',
+                'column': col,
+                'priority': priority or 'medium',
+                'assignee_email': assignee or '',
+                'start_time': st_str,
+                'end_time': et_str,
+                'sort_order': sort_o or 0,
+                'labels': labels,
+            })
+        
+        return jsonify(tasks)
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ── API: GET /api/tasks (list all tasks with labels) — alias for frontend compat ──
+
 @csrf.exempt
 @app.route('/api/calendar', methods=['GET'])
 def get_calendar_tasks():
@@ -367,6 +417,68 @@ def get_calendar_tasks():
     cur.close()
     conn.close()
     return jsonify(tasks)
+
+
+
+# ── API: GET /api/stats (dashboard statistics) ──
+@csrf.exempt
+@app.route('/api/stats', methods=['GET'])
+def get_stats():
+    """Return dashboard statistics."""
+    conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
+    cur = conn.cursor()
+    try:
+        # Count by column
+        cur.execute("SELECT column_name, COUNT(*) FROM kanban_tasks GROUP BY column_name")
+        col_counts = {r[0]: r[1] for r in cur.fetchall()}
+        
+        # Total tasks
+        total = sum(col_counts.values()) or 0
+        
+        # Overdue count (end_time passed)
+        try:
+            cur.execute("SELECT COUNT(*) FROM kanban_tasks WHERE end_time < NOW() AND column_name != 'done'")
+            overdue_count = cur.fetchone()[0]
+        except Exception:
+            overdue_count = 0
+        
+        # Priority breakdown
+        try:
+            cur.execute("SELECT priority, COUNT(*) FROM kanban_tasks GROUP BY priority")
+            priority_counts = {r[0]: r[1] for r in cur.fetchall()}
+        except Exception:
+            priority_counts = {}
+        
+        # Recent activity (last 10)
+        try:
+            sql_activity = """SELECT al.task_id, t.title, al.action, al.created_at, 
+                                  al.actor_email FROM activity_log al
+                           JOIN kanban_tasks t ON al.task_id=t.id
+                           ORDER BY al.created_at DESC LIMIT 10"""
+            cur.execute(sql_activity)
+            recent = []
+            for r in cur.fetchall():
+                created_str = r[3].isoformat() if hasattr(r[3], 'isoformat') else str(r[3])
+                recent.append({
+                    'task_id': r[0], 
+                    'title': r[1] or '(deleted)',
+                    'action': r[2],
+                    'time': created_str,
+                    'actor': r[4] or ''
+                })
+        except Exception:
+            recent = []
+        
+        return jsonify({
+            'total': total,
+            'by_column': col_counts,
+            'overdue_count': overdue_count,
+            'priority_breakdown': priority_counts,
+            'recent_activity': recent
+        })
+    finally:
+        cur.close()
+        conn.close()
 
 
 # ── API: GET /api/calendar/assignees (distinct assignees for current month) ──
@@ -499,56 +611,6 @@ def search_users():
 
 
 # ── API: GET /api/tasks ──
-@csrf.exempt
-@app.route('/api/tasks', methods=['GET'])
-def get_tasks():
-    """Return all kanban tasks from shared DB."""
-    conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT id, title, description, column_name, priority, creator_email, assignee_email, start_time, end_time FROM kanban_tasks ORDER BY column_name, id;")
-    rows = cur.fetchall()
-    tasks = []
-    for r in rows:
-        # Convert timestamp objects to ISO format strings
-        st = r[7].isoformat() if r[7] else None
-        et = r[8].isoformat() if r[8] else None
-        task = {
-            'id': r[0], 'title': r[1], 'description': r[2] or '',
-            'column': r[3], 'priority': r[4],
-            'creator_email': r[5], 'assignee_email': r[6],
-            'start_time': st, 'end_time': et,
-        }
-        # Get labels for this task
-        cur2 = conn.cursor()
-        try:
-            cur2.execute("""SELECT l.name, l.color FROM kanban_labels l 
-                JOIN task_labels tl ON tl.label_id=l.id WHERE tl.task_id=%s ORDER BY l.name""", (r[0],))
-            labels = [{'name': rr[0], 'color': rr[1]} for rr in cur2.fetchall()]
-        except Exception:
-            labels = []
-        finally:
-            cur2.close()
-        task['labels'] = labels
-        # Get subtask stats
-        try:
-            cur3 = conn.cursor()
-            try:
-                cur3.execute("SELECT COUNT(*) as total, SUM(CASE WHEN is_completed THEN 1 ELSE 0 END) as done FROM subtasks WHERE parent_task_id=%s", (r[0],))
-                stats = cur3.fetchone()
-                task['subtask_total'] = stats[0] or 0
-                task['subtask_done'] = stats[1] or 0
-            finally:
-                cur3.close()
-        except Exception:
-            task['subtask_total'] = 0
-            task['subtask_done'] = 0
-        tasks.append(task)
-    cur.close()
-    conn.close()
-    return jsonify(tasks)
-
-
-# ── API: POST /api/tasks (create task from form/JS) ──
 @csrf.exempt
 @app.route('/api/task', methods=['POST'])
 def create_task():
@@ -814,9 +876,6 @@ def delete_task(tid):
     # Extract calendar event IDs from kanban_calendar_events table (primary) or description markers (fallback)
     extracted_event_ids = []
     
-    # DEBUG: Print current state  
-    import sys as _sys
-    print(f"[DELETE_DEBUG] task_id={tid}", file=_sys.stderr, flush=True)
     try:
         db_conn2 = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
         db_cur2 = db_conn2.cursor()
@@ -833,12 +892,8 @@ def delete_task(tid):
                 if desc_row and desc_row[0]:
                     extracted_event_ids = re.findall(r'\[CALENDAR:([a-zA-Z0-9_-]+)\]', str(desc_row[0]))
             
-            app.logger.info("DELETE task %s: found %d calendar event(s) via kanban_calendar_events table", 
+            app.logger.debug("DELETE task %s: found %d calendar event(s) via kanban_calendar_events table", 
                 tid, len(extracted_event_ids))
-            
-            # DEBUG
-            _sys.stderr.write(f"[DELETE_DEBUG] extracted_event_ids={extracted_event_ids}\n")
-            _sys.stderr.flush()
         finally:
             db_cur2.close()
             db_conn2.close()
@@ -1150,6 +1205,73 @@ def batch_delete_tasks():
         conn.close()
 
     return jsonify({'deleted': deleted})
+
+
+# ── API: GET /api/tasks/export/csv (export tasks as CSV) ──
+@csrf.exempt
+@app.route('/api/tasks/export/csv', methods=['GET'])
+def export_tasks_csv():
+    """Export all visible tasks as a CSV file."""
+    conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
+    cur = conn.cursor()
+    try:
+        # Get all tasks with their details
+        cur.execute("""SELECT t.id, t.title, t.description, t.column_name, t.priority, 
+                              t.assignee_email, t.start_time, t.end_time
+                       FROM kanban_tasks t ORDER BY t.sort_order""")
+        rows = cur.fetchall()
+        
+        # Get labels for all tasks
+        task_labels = {}
+        cur.execute("""SELECT tl.task_id, l.name FROM task_labels tl 
+                      JOIN kanban_labels l ON tl.label_id=l.id""")
+        for r in cur.fetchall():
+            tid = str(r[0])
+            if tid not in task_labels:
+                task_labels[tid] = []
+            task_labels[tid].append(r[1])
+        
+        # Get subtask info for all tasks
+        task_subtasks = {}
+        cur.execute("SELECT parent_task_id, title, is_completed FROM subtasks")
+        for r in cur.fetchall():
+            tid = str(r[0])
+            if tid not in task_subtasks:
+                task_subtasks[tid] = []
+            done_str = "✓" if r[2] else "✗"
+            task_subtasks[tid].append(f"{done_str} {r[1]}")
+        
+        # Build CSV content
+        import io as _io
+        output = _io.StringIO()
+        writer = __import__('csv').Writer(output)
+        writer.writerow(['ID', '標題', '描述', '欄位', '優先級', '負責人', '開始時間', '結束時間', '標籤', '子任務'])
+        
+        for r in rows:
+            tid, title, desc, col, priority, assignee, start_t, end_t = r
+            labels_str = ', '.join(task_labels.get(str(tid), []))
+            subs_str = '\n'.join(task_subtasks.get(str(tid), []))
+            writer.writerow([
+                str(tid), 
+                (title or '').replace('\n', ' '),
+                (desc or '').replace('\n', ' '),
+                col or '', priority or '', assignee or '',
+                start_t.strftime('%Y-%m-%d %H:%M') if start_t else '',
+                end_t.strftime('%Y-%m-%d %H:%M') if end_t else '',
+                labels_str, subs_str
+            ])
+        
+        csv_bytes = output.getvalue().encode('utf-8-sig')  # UTF-8 BOM for Excel compatibility
+        response = __import__('flask').make_response(csv_bytes)
+        response.headers['Content-Type'] = 'text/csv; charset=utf-8-sig'
+        response.headers['Content-Disposition'] = f'attachment; filename=kanban-tasks-{__import__("datetime").datetime.now().strftime("%Y-%m-%d")}.csv'
+        return response
+    except Exception as e:
+        app.logger.error("CSV export failed: %s", str(e))
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
 
 
 # ── API: GET /api/labels (list all labels) ──
@@ -1521,8 +1643,12 @@ def _notify_schedule_change(task_id, creator_email, assignee_email='', title='',
         _get_user_token_from_db(google_id)
         from calendar_service import resync_task_schedule as cal_resync
         if session.get('oauth_access_token'):
-            # Resync uses DB tokens internally
             app.logger.info("Schedule changed for task %s — resyncing calendar...", task_id)
+            # Actually call the resync function (was previously only checking token availability)
+            result = cal_resync(google_id=google_id, task_id=task_id, title=title, description=description or '', assignee_emails=session.get('user_email', ''))
+            app.logger.info("Schedule resync for task %s: %s", task_id, "success" if result else "failed")
+        else:
+            app.logger.debug("No OAuth token available for schedule change on task %s — skipping calendar resync", task_id)
     except Exception as e:
         app.logger.warning("Calendar resync failed for task %s: %s", task_id, str(e))
 
@@ -1643,7 +1769,431 @@ def _cleanup_calendar_on_delete(task_id):
         app.logger.error("Failed to clean DB records for calendar cleanup task %s: %s", task_id, str(e))
 
 
+# ── API: POST /api/task/<tid>/clone (clone task with subtasks and labels) ──
+@csrf.exempt
+@app.route('/api/task/<tid>/clone', methods=['POST'])
+def clone_task(tid):
+    """Clone a task including its subtasks, labels, and schedule."""
+    conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
+    cur = conn.cursor()
+    try:
+        # Get original task data
+        cur.execute("""SELECT id, title, description, column_name, priority, assignee_email, 
+                              start_time, end_time FROM kanban_tasks WHERE id=%s""", (tid,))
+        row = cur.fetchone()
+        if not row:
+            return jsonify({'error': 'task not found'}), 404
+        
+        orig_id, title, desc, col, priority, assignee, start_t, end_t = row
+        
+        # Generate new ID and clone task
+        new_title = f"{title} (副本)"
+        cur.execute("""INSERT INTO kanban_tasks (id, title, description, column_name, priority, 
+                             assignee_email, start_time, end_time)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                    (f"clone_{tid}_{int(datetime.now().timestamp())}", new_title, desc, col,
+                     priority, assignee, start_t, end_t))
+        new_task_id = cur.fetchone()[0]
+
+        # Clone subtasks
+        cur.execute("""SELECT title, is_completed FROM subtasks WHERE parent_task_id=%s ORDER BY sort_order""", (tid,))
+        subtasks = cur.fetchall()
+        for i, (st_title, st_done) in enumerate(subtasks):
+            try:
+                from uuid import uuid4
+                sub_id = str(uuid4())[:8]
+                cur.execute("""INSERT INTO subtasks (id, parent_task_id, title, is_completed, sort_order) 
+                               VALUES (%s,%s,%s,%s,%s)""",
+                            (sub_id, new_task_id, st_title, st_done, i))
+            except Exception:
+                pass
+
+        # Clone labels
+        cur.execute("""SELECT l.name, l.color FROM kanban_labels l
+                       JOIN task_labels tl ON tl.label_id=l.id WHERE tl.task_id=%s""", (tid,))
+        labels = cur.fetchall()
+        for lbl_name, lbl_color in labels:
+            try:
+                # Get or create label
+                cur.execute("SELECT id FROM kanban_labels WHERE name=%s", (lbl_name,))
+                lr = cur.fetchone()
+                if lr:
+                    label_id = lr[0]
+                else:
+                    cur.execute("""INSERT INTO kanban_labels (name, color) VALUES (%s,%s) RETURNING id""",
+                                (lbl_name, lbl_color))
+                    label_id = cur.fetchone()[0]
+                
+                # Assign to new task
+                try:
+                    from uuid import uuid4
+                    tl_id = str(uuid4())[:8]
+                    cur.execute("""INSERT INTO task_labels (id, task_id, label_id) VALUES (%s,%s,%s)""",
+                                (tl_id, new_task_id, label_id))
+                except Exception:
+                    pass  # already exists
+            except Exception:
+                pass
+
+        conn.commit()
+        
+        # Log activity for cloned task
+        try:
+            cur2 = conn.cursor()
+            try:
+                cur2.execute("""INSERT INTO activity_log (task_id, actor_email, action, field_name, old_value, new_value) 
+                               VALUES (%s,%s,%s,%s,%s,%s)""",
+                             (new_task_id, session.get('user_email', ''), 'cloned', 'clone', f"Task {orig_id}", "Cloned"))
+                conn.commit()
+            finally:
+                cur2.close()
+        except Exception as e:
+            app.logger.warning("Activity log failed for clone task %s: %s", new_task_id, str(e))
+
+        return jsonify({'id': new_task_id, 'title': new_title})
+    except Exception as e:
+        conn.rollback()
+        app.logger.error("Clone task failed: %s", str(e))
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+
+
+# ── Phase 5: Ensure kanban_columns table exists (dynamic columns) ──
+def ensure_kanban_columns_table():
+    """Create kanban_columns table for dynamic column management."""
+    try:
+        conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
+        cur = conn.cursor()
+        # Migrate hardcoded columns into the new table, preserving order
+        default_cols = ['backlog', 'todo', 'in_progress', 'review', 'done']
+        for i, col_name in enumerate(default_cols):
+            cur.execute(
+                """INSERT INTO kanban_columns (name, display_name, sort_order)
+                   VALUES (%s,%s,%s)
+                   ON CONFLICT (name) DO NOTHING""",
+                (col_name, _get_display_name(col_name), i + 1)
+            )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        app.logger.warning("Failed to ensure kanban_columns table: %s", str(e))
+
+
+# ── Phase 5: Ensure kanban_comments table exists (task comments) ──
+def ensure_kanban_comments_table():
+    """Create kanban_comments table for task-level commenting."""
+    try:
+        conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS kanban_comments (
+                id SERIAL PRIMARY KEY,
+                task_id VARCHAR(50) NOT NULL,
+                actor_email TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        app.logger.warning("Failed to ensure kanban_comments table: %s", str(e))
+
+
+# ── Helper: column display name mapping ──
+def _get_display_name(col_name):
+    """Get human-readable display name for a column slug."""
+    names = {
+        'backlog': 'Backlog',
+        'todo': 'To Do',
+        'in_progress': 'In Progress',
+        'review': 'Review',
+        'done': 'Done',
+    }
+    return names.get(col_name, col_name.replace('_', ' ').title())
+
+
+# ── Phase 5 API: GET /api/columns (list all kanban columns) ──
+@csrf.exempt
+@app.route('/api/columns', methods=['GET'])
+def get_columns():
+    """Return all kanban column definitions."""
+    conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT name, display_name, sort_order FROM kanban_columns ORDER BY sort_order")
+        rows = cur.fetchall()
+        return jsonify([{'name': r[0], 'display_name': r[1] or r[0].replace('_', ' ').title(), 'sort_order': r[2]} for r in rows])
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ── Phase 5 API: POST /api/column (create column) ──
+@csrf.exempt
+@app.route('/api/column', methods=['POST'])
+def create_column():
+    """Create a new kanban column."""
+    data = request.json or {}
+    name = data.get('name', '').strip().lower().replace(' ', '_')
+    display_name = data.get('display_name', name.replace('_', ' ').title())
+    if not name:
+        return jsonify({'error': 'missing name'}), 400
+
+    conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
+    cur = conn.cursor()
+    try:
+        # Check for duplicate slug
+        cur.execute("SELECT COUNT(*) FROM kanban_columns WHERE name=%s", (name,))
+        if cur.fetchone()[0] > 0:
+            return jsonify({'error': 'column already exists'}), 409
+
+        # Get max sort_order + 1
+        cur.execute("SELECT COALESCE(MAX(sort_order), 0) FROM kanban_columns")
+        new_order = cur.fetchone()[0] + 1
+
+        cur.execute(
+            """INSERT INTO kanban_columns (name, display_name, sort_order) VALUES (%s,%s,%s) RETURNING id""",
+            (name, display_name, new_order)
+        )
+        lid = cur.fetchone()[0]
+        conn.commit()
+        return jsonify({'id': lid, 'name': name, 'display_name': display_name}), 201
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'error': str(e)}), 400
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ── Phase 5 API: PUT /api/column/<name> (update column) ──
+@csrf.exempt
+@app.route('/api/column/<col_name>', methods=['PUT'])
+def update_column(col_name):
+    """Update a kanban column's display name or sort order."""
+    data = request.json or {}
+    conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
+    cur = conn.cursor()
+    try:
+        updates = []
+        params = []
+        if 'display_name' in data and data['display_name']:
+            updates.append("display_name=%s")
+            params.append(data['display_name'])
+        if 'sort_order' in data and data['sort_order'] is not None:
+            updates.append("sort_order=%s")
+            params.append(int(data['sort_order']))
+
+        if not updates:
+            return jsonify({'error': 'nothing to update'}), 400
+
+        params.append(col_name)
+        query = f"UPDATE kanban_columns SET {', '.join(updates)} WHERE name=%s"
+        cur.execute(query, params)
+        conn.commit()
+        return jsonify({'status': 'ok', 'updated': cur.rowcount > 0})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'error': str(e)}), 400
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ── Phase 5 API: DELETE /api/column/<name> (delete column) ──
+@csrf.exempt
+@app.route('/api/column/<col_name>', methods=['DELETE'])
+def delete_column(col_name):
+    """Delete a kanban column. Tasks in it are moved to 'todo' first."""
+    conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
+    cur = conn.cursor()
+    try:
+        # Move tasks out of this column first
+        cur.execute(
+            "UPDATE kanban_tasks SET column_name='todo' WHERE column_name=%s AND column_name != 'done'",
+            (col_name,)
+        )
+
+        # Delete the column definition
+        cur.execute("DELETE FROM kanban_columns WHERE name=%s", (col_name,))
+        conn.commit()
+        return jsonify({'status': 'ok', 'moved_tasks': cur.rowcount})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'error': str(e)}), 400
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ── Phase 5 API: POST /api/tasks/batch-priority (batch update priority) ──
+@csrf.exempt
+@app.route('/api/tasks/batch-priority', methods=['POST'])
+def batch_update_priority():
+    """Batch update priority for selected tasks."""
+    data = request.json or {}
+    task_ids = data.get('task_ids', [])
+    priority = data.get('priority')
+    if not task_ids or not priority:
+        return jsonify({'error': 'missing task_ids or priority'}), 400
+
+    conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
+    cur = conn.cursor()
+    updated = 0
+    try:
+        for tid in task_ids:
+            # Read old priority before update (for activity logging)
+            cur.execute("SELECT title, priority FROM kanban_tasks WHERE id=%s", (tid,))
+            row = cur.fetchone()
+            if not row:
+                continue
+
+            old_priority = row[1] or 'medium'
+            new_priority = priority.lower().strip()
+            if new_priority not in ('high', 'medium', 'low'):
+                continue
+
+            try:
+                cur2 = conn.cursor()
+                try:
+                    cur2.execute(
+                        "UPDATE kanban_tasks SET priority=%s WHERE id=%s",
+                        (new_priority, tid)
+                    )
+                    conn.commit()
+
+                    # Log activity for each task
+                    if row[1] != new_priority:
+                        cur3 = conn.cursor()
+                        try:
+                            cur3.execute(
+                                "INSERT INTO activity_log (task_id, actor_email, action, field_name, old_value, new_value) VALUES (%s,%s,%s,%s,%s,%s)",
+                                (tid, session.get('user_email', ''), 'updated', 'priority', old_priority, new_priority)
+                            )
+                            conn.commit()
+                        finally:
+                            cur3.close()
+
+                    updated += 1
+                finally:
+                    cur2.close()
+            except Exception:
+                continue
+
+        return jsonify({'updated': updated})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'error': str(e)}), 400
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ── Phase 5 API: POST /api/task/<tid>/comment (add comment) ──
+@csrf.exempt
+@app.route('/api/task/<tid>/comment', methods=['POST'])
+def add_comment(tid):
+    """Add a comment to a task."""
+    data = request.json or {}
+    content = data.get('content', '').strip()
+    if not content:
+        return jsonify({'error': 'missing content'}), 400
+
+    conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
+    cur = conn.cursor()
+    try:
+        # Verify task exists
+        cur.execute("SELECT title FROM kanban_tasks WHERE id=%s", (tid,))
+        if not cur.fetchone():
+            return jsonify({'error': 'task not found'}), 404
+
+        cur.execute(
+            """INSERT INTO kanban_comments (task_id, actor_email, content) VALUES (%s,%s,%s) RETURNING id""",
+            (tid, session.get('user_email', ''), content)
+        )
+        cid = cur.fetchone()[0]
+        conn.commit()
+
+        # Log activity
+        try:
+            cur2 = conn.cursor()
+            try:
+                cur2.execute(
+                    "INSERT INTO activity_log (task_id, actor_email, action, field_name, old_value, new_value) VALUES (%s,%s,%s,%s,%s,%s)",
+                    (tid, session.get('user_email', ''), 'commented', None, '📝 新增留言', content[:80])
+                )
+                conn.commit()
+            finally:
+                cur2.close()
+        except Exception as e:
+            app.logger.warning("Activity log failed for comment on task %s: %s", tid, str(e))
+
+        return jsonify({'id': cid}), 201
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'error': str(e)}), 400
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ── Phase 5 API: GET /api/task/<tid>/comments (list comments for task) ──
+@csrf.exempt
+@app.route('/api/task/<tid>/comments', methods=['GET'])
+def get_comments(tid):
+    """Return all comments for a task."""
+    conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT id, actor_email, content, created_at FROM kanban_comments WHERE task_id=%s ORDER BY created_at ASC",
+            (tid,)
+        )
+        rows = cur.fetchall()
+        return jsonify([
+            {
+                'id': r[0],
+                'actor_email': r[1] or '',
+                'content': r[2] or '',
+                'created_at': r[3].isoformat() if r[3] else None,
+            } for r in rows
+        ])
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ── Phase 5 API: DELETE /api/comment/<cid> (delete comment) ──
+@csrf.exempt
+@app.route('/api/comment/<int:cid>', methods=['DELETE'])
+def delete_comment(cid):
+    """Delete a comment."""
+    conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM kanban_comments WHERE id=%s", (cid,))
+        conn.commit()
+        return jsonify({'deleted': cur.rowcount > 0})
+    finally:
+        cur.close()
+        conn.close()
+
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
+
+    # Ensure Phase 5 tables exist
+    try:
+        ensure_kanban_columns_table()
+        ensure_kanban_comments_table()
+    except Exception as e:
+        app.logger.warning("Phase 5 table init failed: %s", str(e))
+
     app.run(host='0.0.0.0', port=port, debug=True)
 

@@ -20,6 +20,9 @@
         <input type="checkbox" id="batchModeToggle" onchange="toggleBatchMode()">
         &#x2611; 批次模式
       </label>
+      <button id="darkModeToggle" onclick="toggleDarkMode()" title="切換深色模式" style="background:none;border:1px solid var(--border-color);padding:4px 8px;border-radius:4px;cursor:pointer;">🌓</button>
+      <a href="#" onclick="openLabelManageModal(); return false;" class="toggle-btn">&#x1f3ff; 管理標籤</a>
+      <a href="#" onclick="openColumnManageModal(); return false;" class="toggle-btn">&#x1f4cb; 管理欄位</a>
       <a href="/logout" class="btn-logout">登出</a>
     {% else %}
       <span class="nav-note">請登入以使用看板功能</span>
@@ -41,6 +44,7 @@
   <div class="label-filter-bar" id="labelFilterBar">
     <!-- Populated by JS from /api/labels -->
   </div>
+  <button onclick="exportCSV()" title="匯出 CSV" style="margin-left:8px;padding:4px 12px;background:#6c757d;color:#fff;border:none;border-radius:4px;cursor:pointer;">📥 匯出</button>
 </div>
 
 <!-- Batch Operations Toolbar (hidden unless batch mode active) -->
@@ -55,8 +59,44 @@
     <option value="done">&#x2705; Done</option>
   </select>
   <button class="btn-batch-move" onclick="doBatchMove()">&#x1f4c4; 移動</button>
+  <select id="batchPrioritySelect">
+    <option value="">優先級...</option>
+    <option value="high">&#x1f534; 高</option>
+    <option value="medium">&#x1f7e1; 中</option>
+    <option value="low">&#x26aa; 低</option>
+  </select>
+  <button class="btn-batch-priority" onclick="doBatchPriority()">&#x25b3;&#xfe0e; 優先級</button>
   <button class="btn-batch-delete" onclick="doBatchDelete()">&#x1f5d1;&#xfe0e; 刪除</button>
   <button class="btn-clear-selection" onclick="clearSelection()">&#x2715; 取消選取</button>
+</div>
+
+<!-- Phase 5: Column Management Modal -->
+<div class="modal-overlay hidden" id="columnManageModal">
+  <div class="modal-box modal-small">
+    <h3>&#x1f4cb; 管理欄位</h3>
+    <div id="columnManageList"></div>
+    <form onsubmit="handleCreateColumnFromManage(event)" style="display:flex;gap:8px;margin-top:12px;">
+      <input type="text" id="newColumnName" placeholder="欄位名稱 (英文, e.g. testing)" required>
+      <button type="submit" class="btn-save btn-sm">新增</button>
+    </form>
+    <div style="text-align:right;margin-top:12px;">
+      <button class="btn-cancel" onclick="document.getElementById('columnManageModal').classList.add('hidden')">關閉</button>
+    </div>
+  </div>
+</div>
+
+<!-- Dashboard Stats Panel -->
+<div class="dashboard-stats" id="dashboardStats">
+  <h3>&#x1f4c8; 看板統計</h3>
+  <div class="stats-grid">
+    <div class="stat-item total"><span id="totalTasks">0</span><label>總任務</label></div>
+    <div class="stat-item overdue"><span id="overdueCount">0</span><label>已逾期</label></div>
+    <div class="stat-item backlog"><span id="colBacklog">0</span><label>Backlog</label></div>
+    <div class="stat-item todo"><span id="colTodo">0</span><label>To Do</label></div>
+    <div class="stat-item progress"><span id="colProgress">0</span><label>In Progress</label></div>
+    <div class="stat-item review"><span id="colReview">0</span><label>Review</label></div>
+    <div class="stat-item done"><span id="colDone">0</span><label>Done</label></div>
+  </div>
 </div>
 
 <div class="kanban-wrapper" id="kanbanWrapper">
@@ -172,7 +212,7 @@
   <div class="modal-box modal-small">
     <h3>&#x1f3ff; 管理標籤</h3>
     <div id="labelManageList"></div>
-    <form onsubmit="createNewLabel(event)" style="display:flex;gap:8px;margin-top:12px;">
+    <form onsubmit="handleCreateLabelFromManage(event)" style="display:flex;gap:8px;margin-top:12px;">
       <input type="text" id="newLabelName" placeholder="新標籤名稱" required>
       <input type="color" id="newLabelColor" value="#3B82F6">
       <button type="submit" class="btn-save btn-sm">新增</button>
