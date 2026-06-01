@@ -321,8 +321,17 @@ def get_all_tasks():
             except Exception:
                 labels = []
             
-            st_str = start_t.isoformat() if start_t else None
-            et_str = end_t.isoformat() if end_t else None
+            # Normalize timestamp: extract DATE ONLY for consistent display across timezones
+            def fmt_ts(dt):
+                if not dt:
+                    return None
+                # Return YYYY-MM-DD only — JS parses date-only strings as LOCAL dates,
+                # avoiding the UTC→local timezone shift that pushes "June 2 at 11PM UTC"
+                # to "June 3 at 7AM local time" for UTC+8 users.
+                return dt.strftime('%Y-%m-%d')
+            
+            st_str = fmt_ts(start_t)
+            et_str = fmt_ts(end_t)
             
             tasks.append({
                 'id': str(tid),
@@ -402,8 +411,12 @@ def get_calendar_tasks():
     rows = cur.fetchall()
     tasks = []
     for r in rows:
-        st = r[5].isoformat() if r[5] else None
-        et = r[6].isoformat() if r[6] else None
+        def fmt_ts(dt):
+            if not dt:
+                return None
+            return dt.strftime('%Y-%m-%d')
+        st = fmt_ts(r[5])
+        et = fmt_ts(r[6])
         tasks.append({
             'id': r[0],
             'title': r[1],

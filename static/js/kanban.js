@@ -13,9 +13,34 @@ var priorityFilter = '';
 var labelFilter = '';
 var allLabelsCache = [];  // [{id, name, color}]
 const PRIORITY_LABELS = { high: '高', medium: '中', low: '低' };
+
+// Get today's date as YYYY-MM-DD string (local time)
 function getTodayStr() {
     var d = new Date();
     return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+
+// Extract YYYY-MM-DD from a Date object (BUG #3 fix: was missing, causing editTask to crash)
+function getTodayStrFromObj(dt) {
+    var y = dt.getFullYear();
+    var m = String(dt.getMonth()+1).padStart(2,'0');
+    var d = String(dt.getDate()).padStart(2,'0');
+    return y + '-' + m + '-' + d;
+}
+
+// Parse ISO timestamp string to Date, handling both full timestamps and date-only strings
+function parseTimestamp(ts) {
+    if (!ts) return null;
+    // If it's a date-only string (no 'T' separator), append T00:00 for local parsing
+    if (typeof ts === 'string' && !ts.includes('T')) {
+        return new Date(ts + 'T00:00');
+    }
+    // Full ISO timestamp with timezone offset — use as-is
+    if (typeof ts === 'string' && (ts.indexOf('+') > 0 || ts.slice(-1) === 'Z')) {
+        return new Date(ts);
+    }
+    // Naive timestamp (no tz info) — append Z to force UTC parsing
+    return new Date(ts + 'Z');
 }
 
 
@@ -41,6 +66,7 @@ const DEFAULT_TASKS = [
 // Phase 5: Dynamic Column Management  
 // ==========================================
 
+var DEFAULT_COLUMNS = ['backlog', 'todo', 'in_progress', 'review', 'done'];
 var allColumns = []; // loaded from /api/columns
 
 function loadColumns() {
@@ -168,7 +194,7 @@ function checkDarkModePreference() {
 function isOverdue(task) {
     if (!task.end_time || task.column === 'done') return false;
     try {
-        var endTime = new Date(task.end_time);
+        var endTime = parseTimestamp(task.end_time);
         return endTime < new Date();
     } catch(e) {
         return false;
@@ -187,7 +213,8 @@ function renderCard(t) {
         }).join('');
     }
     if (t.start_time) {
-        footerParts += '<span class="time-mini">📅 ' + escHtml(new Date(t.start_time).toLocaleDateString('zh-TW')) + '</span>';
+        var st = parseTimestamp(t.start_time);
+        footerParts += '<span class="time-mini">📅 ' + escHtml(st.toLocaleDateString('zh-TW')) + '</span>';
     }
     
     // Label chips on card
@@ -810,14 +837,14 @@ function editTask(id) {
         document.getElementById('assignedUserEmails').value = '';
     }
     
-    // Bug #3 fix: Split ISO timestamp into separate date+time inputs
+    // Bug #3 fix: Split ISO timestamp into separate date+time inputs using parseTimestamp
     if (t.start_time) {
-        var st = new Date(t.start_time.replace('Z', '+00:00'));
+        var st = parseTimestamp(t.start_time);
         document.getElementById('taskStartDate').value = getTodayStrFromObj(st);
         document.getElementById('taskStartTime').value = String(st.getHours()).padStart(2,'0') + ':' + String(st.getMinutes()).padStart(2,'0');
     }
     if (t.end_time) {
-        var et = new Date(t.end_time.replace('Z', '+00:00'));
+        var et = parseTimestamp(t.end_time);
         document.getElementById('taskEndDate').value = getTodayStrFromObj(et);
         document.getElementById('taskEndTime').value = String(et.getHours()).padStart(2,'0') + ':' + String(et.getMinutes()).padStart(2,'0');
     }
@@ -896,14 +923,14 @@ function saveTask() {
     var labelNames = labelNamesStr ? labelNamesStr.split(',').map(function(n){return n.trim();}).filter(Boolean) : [];
 
     if (editingId) {
-        var editPromise = fetch('/api/task/' + editingId, {
+        // BUG #2 fix: Wait for server sync BEFORE closing modal
+        fetch('/api/task/' + editingId, {
             credentials: 'same-origin',
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({title: title, description: desc, column: currentColumn, priority: priority, assignee_email: assigneeEmailsStr, start_time: startTime, end_time: endTime})
-        });
-
-        editPromise.then(function() { 
+        })
+        .then(function() { 
             // Send labels separately via dedicated endpoint  
             var labelPromise = null;
             if (labelNames.length > 0) {
@@ -914,15 +941,15 @@ function saveTask() {
                     body: JSON.stringify({labels: labelNames})
                 });
             }
-            return (labelPromise || Promise.resolve()).then(function() { 
-                syncFromServer(); 
-                // Phase 3: Reload subtasks and activity log in modal after edit
-                var subSec = document.getElementById('subtaskSection');
-                if (subSec && !subSec.classList.contains('hidden')) loadSubtasks(editingId);
-                var actSec = document.getElementById('activitySection');
-                if (actSec && !actSec.classList.contains('hidden')) loadActivityLog(editingId);
-            });
-        });
+            return (labelPromise || Promise.resolve());
+        })
+        .then(function() { 
+            // BUG #2 fix: Wait for server sync to complete before closing modal
+            return fetch('/api/tasks', { credentials: 'same-origin' }).then(function(r) { return r.json(); });
+        })
+        .then(function(data) { tasks = data; saveTasks(); renderBoard(); })
+        .catch(function(err) { console.error('Save failed:', err); })
+        .finally(function() { closeModal(); loadDashboardStats(); });
     } else {
         var newId = 't' + Date.now();
         fetch('/api/task', { 
@@ -930,7 +957,8 @@ function saveTask() {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({id: newId, title: title, description: desc, column: currentColumn, priority: priority, assignee_email: assigneeEmailsStr, start_time: startTime, end_time: endTime})
-        }).then(function() { 
+        })
+        .then(function() { 
             // Create labels if needed and assign them
             if (labelNames.length > 0) {
                 return fetch('/api/task/' + newId + '/labels', {
@@ -938,20 +966,17 @@ function saveTask() {
                     method: 'PUT',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({labels: labelNames})
-                }).then(function() { syncFromServer(); });
-            } else {
-                return syncFromServer();
+                });
             }
-        });
+        })
+        .then(function() { 
+            // BUG #2 fix: Wait for server sync to complete before closing modal
+            return fetch('/api/tasks', { credentials: 'same-origin' }).then(function(r) { return r.json(); });
+        })
+        .then(function(data) { tasks = data; saveTasks(); renderBoard(); })
+        .catch(function(err) { console.error('Create failed:', err); })
+        .finally(function() { closeModal(); loadDashboardStats(); });
     }
-
-    // Show calendar confirmation if time is set and assignees selected
-    if (startTime && endTime && assigneeEmailsStr) {
-        console.log('📅 Task synced to Google Calendar for ' + assigneeEmailsStr);
-    }
-    
-    saveTasks();
-    closeModal();
 }
 
 function deleteTask(id) {
