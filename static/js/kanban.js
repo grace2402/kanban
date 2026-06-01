@@ -13,6 +13,11 @@ var priorityFilter = '';
 var labelFilter = '';
 var allLabelsCache = [];  // [{id, name, color}]
 const PRIORITY_LABELS = { high: '高', medium: '中', low: '低' };
+function getTodayStr() {
+    var d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+
 
 const DEFAULT_TASKS = [
     {id:'t1', title:'歷史數據資料庫化', description:'將 MQTT 歷史資料存入 SQLite/PostgreSQL，取代 localStorage', column:'backlog', priority:'high'},
@@ -761,12 +766,12 @@ function openAddModal(col) {
     document.getElementById('taskTitle').value = '';
     document.getElementById('taskDesc').value = '';
     document.getElementById('taskPriority').value = 'medium';
-    
+
     // Reset new fields (Phase 3)
     document.getElementById('taskAssigneeInput').value = '';
     renderAssigneeBadges([]);
     document.getElementById('assignedUserEmails').value = '';
-    
+
     // Reset label fields
     document.getElementById('taskLabelInput').value = '';
     document.getElementById('labelBadgesContainer').style.display = 'none';
@@ -774,9 +779,14 @@ function openAddModal(col) {
     if (document.getElementById('assignedUserEmails')) {
         document.getElementById('assignedUserEmails').removeAttribute('data-labels');
     }
-    
-    // Keep HTML default datetime values (00:00 / 23:59) for new tasks
-    
+
+    // Bug #2 fix: Set default dates to today for new tasks
+    var today = getTodayStr();
+    document.getElementById('taskStartDate').value = today;
+    document.getElementById('taskEndDate').value = today;
+    document.getElementById('taskStartTime').value = '00:00';
+    document.getElementById('taskEndTime').value = '23:59';
+
     document.getElementById('cardModal').classList.add('active');
 }
 
@@ -800,8 +810,17 @@ function editTask(id) {
         document.getElementById('assignedUserEmails').value = '';
     }
     
-    if (t.start_time) document.getElementById('taskStartTime').value = t.start_time.slice(0, 16);
-    if (t.end_time) document.getElementById('taskEndTime').value = t.end_time.slice(0, 16);
+    // Bug #3 fix: Split ISO timestamp into separate date+time inputs
+    if (t.start_time) {
+        var st = new Date(t.start_time.replace('Z', '+00:00'));
+        document.getElementById('taskStartDate').value = getTodayStrFromObj(st);
+        document.getElementById('taskStartTime').value = String(st.getHours()).padStart(2,'0') + ':' + String(st.getMinutes()).padStart(2,'0');
+    }
+    if (t.end_time) {
+        var et = new Date(t.end_time.replace('Z', '+00:00'));
+        document.getElementById('taskEndDate').value = getTodayStrFromObj(et);
+        document.getElementById('taskEndTime').value = String(et.getHours()).padStart(2,'0') + ':' + String(et.getMinutes()).padStart(2,'0');
+    }
     
     // Load labels for modal
     if (t.labels && t.labels.length > 0) {
@@ -852,8 +871,22 @@ function saveTask() {
 
     // Phase 3: Read new fields (multi)
     var assigneeEmailsStr = document.getElementById('assignedUserEmails').value || null;
-    var startTime = document.getElementById('taskStartTime').value || null;
-    var endTime = document.getElementById('taskEndTime').value || null;
+    
+    // Bug #3 fix: Combine separate date+time inputs into ISO format
+    var startDateVal = document.getElementById('taskStartDate').value || '';
+    var startTimeVal = document.getElementById('taskStartTime').value || '00:00';
+    var endDateVal = document.getElementById('taskEndDate').value || '';
+    var endTimeVal = document.getElementById('taskEndTime').value || '23:59';
+    
+    var startTime = null;
+    if (startDateVal) {
+        startTime = startDateVal + 'T' + startTimeVal;
+    }
+    var endTime = null;
+    if (endDateVal) {
+        // Bug #1 fix: For calendar link, use next day 00:00 when multi-day task
+        endTime = endDateVal + 'T' + endTimeVal;
+    }
     
     // Read labels from modal data-labels attribute
     var labelNamesStr = '';

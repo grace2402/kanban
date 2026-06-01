@@ -1539,3 +1539,47 @@ body {
 .modal-small {
     max-width: 500px;
 }
+
+
+/* ==========================================
+   Bug #3 fix: Separate date/time input styling  
+   ========================================== */
+
+.form-datetime .form-group {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.form-datetime .form-group label {
+    width: 100%;
+    margin-bottom: 4px;
+}
+
+.form-datetime input[type="date"],
+.form-datetime input[type="time"] {
+    flex: 1;
+    padding: 6px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.7);
+    font-size: 13px;
+}
+
+.form-datetime input[type="date"]:hover,
+.form-datetime input[type="time"]:hover {
+    border-color: var(--accent-blue);
+    background: rgba(255, 255, 255, 0.9);
+}
+
+.form-datetime input[type="date"]::-webkit-calendar-picker-indicator,
+.form-datetime input[type="time"]::-webkit-calendar-picker-indicator {
+    cursor: pointer;
+    opacity: 0.6;
+    transition: opacity 0.2s;
+}
+
+.form-datetime input[type="date"]::-webkit-calendar-picker-indicator:hover,
+.form-datetime input[type="time"]::-webkit-calendar-picker-indicator:hover {
+    opacity: 1;
+}

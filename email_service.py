@@ -14,7 +14,7 @@ import smtplib
 import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 # ── SMTP Configuration ──
@@ -86,7 +86,11 @@ def build_task_notification_html(task_id, title, description, priority, start_ti
             dt_start = datetime.fromisoformat(str(start_time).replace('Z', '+00:00'))
             if end_time and end_time != start_time:
                 dt_end = datetime.fromisoformat(str(end_time).replace('Z', '+00:00'))
-                cal_dates = f"{dt_start.strftime('%Y%m%dT%H%M%SZ')}/{dt_end.strftime('%Y%m%dT%H%M%SZ')}"
+                                # Bug fix: For multi-day tasks, use end_date + 00:00 next day for calendar link
+                if dt_end.date() > dt_start.date():
+                    cal_dates = f"{dt_start.strftime('%Y%m%dT%H%M%SZ')}/{(dt_end + timedelta(days=1)).strftime('%Y%m%dT000000Z')}"
+                else:
+                    cal_dates = f"{dt_start.strftime('%Y%m%dT%H%M%SZ')}/{dt_end.strftime('%Y%m%dT%H%M%SZ')}" 
             else:
                 cal_dates = f"{dt_start.strftime('%Y%m%dT%H%M%SZ')}/"
         except Exception:
