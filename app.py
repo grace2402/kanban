@@ -302,9 +302,10 @@ def get_all_tasks():
     conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
     cur = conn.cursor()
     try:
-        # Get all tasks ordered by column + sort_order
-        cur.execute("""SELECT id, title, description, column_name, priority, assignee_email, start_time, end_time, sort_order
-                       FROM kanban_tasks ORDER BY column_name, sort_order""")
+        # Use ::date cast in SELECT so PostgreSQL handles timezone conversion before Python sees it.
+        cur.execute("""SELECT id, title, description, column_name, priority, assignee_email, 
+                       start_time::date as st_date, end_time::date as et_date, sort_order
+                      FROM kanban_tasks ORDER BY column_name, sort_order""")
         rows = cur.fetchall()
         
         tasks = []
@@ -321,17 +322,9 @@ def get_all_tasks():
             except Exception:
                 labels = []
             
-            # Normalize timestamp: extract DATE ONLY for consistent display across timezones
-            def fmt_ts(dt):
-                if not dt:
-                    return None
-                # Return YYYY-MM-DD only — JS parses date-only strings as LOCAL dates,
-                # avoiding the UTC→local timezone shift that pushes "June 2 at 11PM UTC"
-                # to "June 3 at 7AM local time" for UTC+8 users.
-                return dt.strftime('%Y-%m-%d')
-            
-            st_str = fmt_ts(start_t)
-            et_str = fmt_ts(end_t)
+            # start_t and end_t are already date objects from ::date cast — no tz issue
+            st_str = str(start_t) if start_t else None
+            et_str = str(end_t) if end_t else None
             
             tasks.append({
                 'id': str(tid),
@@ -385,11 +378,14 @@ def get_calendar_tasks():
     conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
     cur = conn.cursor()
 
+    # Use ::date cast in SELECT so PostgreSQL handles timezone conversion (UTC→local) before Python sees it.
+    # This fixes the bug where end_time='2026-06-02T00:00+08:00' gets stored as 2026-06-01 16:00 UTC,
+    # and strftime('%Y-%m-%d') would incorrectly return '2026-06-01' instead of '2026-06-02'.
     if user_email:
-        # Only show tasks assigned to this user — use LIKE for multi-email support
         like_pattern = '%' + user_email + '%'
         query = """
-            SELECT id, title, description, priority, assignee_email, start_time, end_time
+            SELECT id, title, description, priority, assignee_email, 
+                   start_time::date as st_date, end_time::date as et_date
             FROM kanban_tasks
             WHERE (%s <= COALESCE(end_time::date, date '9999-12-31'))
               AND (COALESCE(start_time::date, date '1970-01-01') < %s)
@@ -398,9 +394,9 @@ def get_calendar_tasks():
         """
         cur.execute(query, (start_date, end_date, like_pattern))
     else:
-        # Show all tasks that overlap with the month
         query = """
-            SELECT id, title, description, priority, assignee_email, start_time, end_time
+            SELECT id, title, description, priority, assignee_email, 
+                   start_time::date as st_date, end_time::date as et_date
             FROM kanban_tasks
             WHERE (%s <= COALESCE(end_time::date, date '9999-12-31'))
               AND (COALESCE(start_time::date, date '1970-01-01') < %s)
@@ -411,12 +407,8 @@ def get_calendar_tasks():
     rows = cur.fetchall()
     tasks = []
     for r in rows:
-        def fmt_ts(dt):
-            if not dt:
-                return None
-            return dt.strftime('%Y-%m-%d')
-        st = fmt_ts(r[5])
-        et = fmt_ts(r[6])
+        st = str(r[5])  # Already a date object from ::date cast — no tz issue
+        et = str(r[6])
         tasks.append({
             'id': r[0],
             'title': r[1],
