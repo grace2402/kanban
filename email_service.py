@@ -81,18 +81,38 @@ def build_task_notification_html(task_id, title, description, priority, start_ti
     
     # Google Calendar link (TEMPLATE action lets user review before adding)
     cal_url = ""
+    
+    def _parse_naive_dt(ts):
+        """Parse ISO timestamp, strip timezone info to get the local date the user intended.
+        
+        When DB stores '2026-06-01T00:00+08:00' (Taipei midnight), we want June 1st
+        as the calendar date — not June 31st which would result from converting to UTC first.
+        Google Calendar template URLs use naive UTC timestamps, so we just extract the local
+        date/time components directly without timezone conversion.
+        """
+        if ts is None:
+            return None
+        s = str(ts)
+        # Replace 'Z' with '+00:00' for fromisoformat compatibility
+        s = s.replace('Z', '+00:00')
+        dt = datetime.fromisoformat(s)
+        # Strip timezone → naive datetime keeps the local date/time components
+        return dt.replace(tzinfo=None)
+    
     if start_time:
         try:
-            dt_start = datetime.fromisoformat(str(start_time).replace('Z', '+00:00'))
+            dt_start = _parse_naive_dt(start_time)
             if end_time and end_time != start_time:
-                dt_end = datetime.fromisoformat(str(end_time).replace('Z', '+00:00'))
-                                # Bug fix: For multi-day tasks, use end_date + 00:00 next day for calendar link
+                dt_end = _parse_naive_dt(end_time)
+                # For multi-day tasks (end date > start date), Google Calendar needs exclusive end → add 1 day
                 if dt_end.date() > dt_start.date():
                     cal_dates = f"{dt_start.strftime('%Y%m%dT%H%M%SZ')}/{(dt_end + timedelta(days=1)).strftime('%Y%m%dT000000Z')}"
                 else:
-                    cal_dates = f"{dt_start.strftime('%Y%m%dT%H%M%SZ')}/{dt_end.strftime('%Y%m%dT%H%M%SZ')}" 
+                    # Same-day task → use end_time as-is (Google interprets this as the day boundary)
+                    cal_dates = f"{dt_start.strftime('%Y%m%dT%H%M%SZ')}/{(dt_end + timedelta(days=1)).strftime('%Y%m%dT000000Z')}"
             else:
-                cal_dates = f"{dt_start.strftime('%Y%m%dT%H%M%SZ')}/"
+                # Single-point time → treat as full day (add 1 day for end)
+                cal_dates = f"{dt_start.strftime('%Y%m%dT%H%M%SZ')}/{(dt_start + timedelta(days=1)).strftime('%Y%m%dT000000Z')}"
         except Exception:
             pass
         
