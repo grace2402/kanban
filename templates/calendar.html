@@ -213,8 +213,7 @@
     }
 
     .calendar-cell::before,
-    .calendar-cell::after,
-    .calendar-cell.empty { display: none; }
+    .calendar-cell::after { display: none; }
 
     .calendar-cell.today {
       border: 2px solid var(--accent-blue);
@@ -843,7 +842,7 @@
   <div class="calendar-grid" id="calendarGrid"></div>
 </div>
 
-<script src="/static/js/calendar.js"></script>
+<script src="/static/js/calendar.js?v3"></script>
 {% if user_email %}
 <script>currentUserEmail = "{{ user_email }}";</script>
 {% endif %}
