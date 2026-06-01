@@ -81,16 +81,59 @@ function loadColumns() {
                     return { name: name, display_name: _getDisplayName(name), sort_order: i + 1 };
                 });
             }
+            renderColumnLayout();
         })
         .catch(function(err) { 
             console.warn('Failed to load columns:', err); 
             allColumns = DEFAULT_COLUMNS.map(function(name, i) {
                 return { name: name, display_name: _getDisplayName(name), sort_order: i + 1 };
             });
+            renderColumnLayout();
         });
 }
 
+// Emoji icons for default columns (used when API doesn't provide icons)
+var COLUMN_ICONS = {'backlog':'\u{1f4cb}','todo':'\u{1f4dd}','in_progress':'\u{1f528}','review':'\u{1f50d}','done':'\u2705'};
+
+function renderColumnLayout() {
+    var board = document.getElementById('kanbanBoard');
+    if (!board) return;
+    
+    // Preserve login gate overlay
+    var loginGate = board.querySelector('.login-gate');
+    // Remove any existing column divs (but keep login gate and other non-column elements)
+    var existingCols = board.querySelectorAll('.kanban-column');
+    for (var i = 0; i < existingCols.length; i++) {
+        board.removeChild(existingCols[i]);
+    }
+    
+    allColumns.forEach(function(col) {
+        var icon = col.display_name && /\p{Emoji}/u.test(col.display_name ? col.display_name.match(/^(\p{Emoji}\s*)?/) : '') 
+            ? '' 
+            : (COLUMN_ICONS[col.name] || '');
+        
+        var displayName = (col.display_name || _getDisplayName(col.name)).replace(/^[^\s]+\s*/, ''); // strip icon if present in display_name
+        
+        var div = document.createElement('div');
+        div.className = 'kanban-column column-' + col.name;
+        div.setAttribute('data-column', col.name);
+        
+        div.innerHTML = 
+            '<div class="column-header"><span>' + (icon ? icon + ' ' : '') + escHtml(displayName) + '</span><span class="column-count" id="count-' + col.name + '">0</span></div>' +
+            '<div class="column-body" id="col-' + col.name + '" ondragover="allowDrop(event)" ondrop="dropCard(event, \'' + col.name + '\')"></div>' +
+            '<button class="add-card-btn" onclick="openAddModal(\'' + col.name + "')\">+ 新增任務</button>";
+        
+        board.appendChild(div);
+    });
+}
+
 function _getDisplayName(slug) {
+    // Look up in loaded columns first, then fall back to defaults
+    for (var i = 0; i < allColumns.length; i++) {
+        if (allColumns[i].name === slug && allColumns[i].display_name) {
+            return allColumns[i].display_name;
+        }
+    }
     var names = {'backlog':'Backlog','todo':'To Do','in_progress':'In Progress','review':'Review','done':'Done'};
     return names[slug] || slug.replace(/_/g, ' ').replace(/\b\w/g, function(c){return c.toUpperCase();});
 }
@@ -158,8 +201,8 @@ function loadDashboardStats() {
             document.getElementById('totalTasks').textContent = stats.total;
             document.getElementById('overdueCount').textContent = stats.overdue_count;
             
-            // Update column counts
-            var columns = ['backlog', 'todo', 'in_progress', 'review', 'done'];
+            // Update column counts dynamically from loaded columns
+            var columns = allColumns.length > 0 ? allColumns : DEFAULT_COLUMNS;
             columns.forEach(function(col) {
                 var elId = 'col' + col.charAt(0).toUpperCase() + col.slice(1);
                 if (document.getElementById(elId)) {
@@ -269,9 +312,6 @@ function renderBoard() {
             
             // Label filter: task must have ALL selected labels
             if (labelFilter && labelFilter.length > 0) {
-
-loadDashboardStats();
-
                 var taskLabels = (t.labels || []).map(function(l){return l.name.toLowerCase()});
                 for (var i = 0; i < labelFilter.length; i++) {
                     if (taskLabels.indexOf(labelFilter[i].toLowerCase()) === -1) return false;

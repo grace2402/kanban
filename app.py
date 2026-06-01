@@ -7,6 +7,38 @@ from sqlalchemy import create_engine, text
 import json as json_lib
 import requests
 
+# ── Centralized timezone helpers (single source of truth) ──
+from timezone_utils import TAIPEI_TZ, ensure_taipei_offset
+
+def _ensure_taipei_offset(ts_str):
+    """Convert naive timestamp from frontend to explicit +08:00 (Taipei).
+    
+    Frontend sends naive timestamps like "2026-06-01T09:00" (no timezone).
+    PostgreSQL with session TZ=UTC would interpret these as UTC, causing 8-hour offset.
+    This function adds explicit +08:00 so DB stores the correct local time.
+    
+    Already-offset timestamps pass through unchanged.
+    """
+    if not ts_str:
+        return ts_str
+    
+    s = str(ts_str)
+    # Already has timezone info - pass through
+    if 'T' in s and (s.endswith('Z') or '+' in s.split('T')[1] or '-' in s.split('T')[1].split('+')[0][-5:]):
+        return ts_str
+    
+    # Naive timestamp - append +08:00 for Taipei
+    try:
+        if 'T' not in s:
+            s = s.replace(' ', 'T')
+        dt = datetime.fromisoformat(s)
+        # Replace naive with Taipei-aware version  
+        taipei_dt = datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, tzinfo=TAIPEI_TZ)
+        return taipei_dt.isoformat()
+    except (ValueError, TypeError):
+        return ts_str
+
+
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'kanban-secret-key-change-me')
 # App metadata for emails
@@ -298,32 +330,37 @@ def calendar():
 @csrf.exempt
 @app.route('/api/tasks', methods=['GET'])
 def get_all_tasks():
-    """Return all kanban tasks with their labels."""
+    """Return all kanban tasks with their labels. Uses single JOIN query to avoid N+1."""
     conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
     cur = conn.cursor()
     try:
-        # Use AT TIME ZONE 'UTC' for timezone-safe date extraction (same as get_calendar_tasks)
-        cur.execute("""SELECT id, title, description, column_name, priority, assignee_email, 
-                       (start_time AT TIME ZONE 'UTC')::date as st_date, 
-                       (end_time AT TIME ZONE 'UTC')::date as et_date, sort_order
-                      FROM kanban_tasks ORDER BY column_name, sort_order""")
+        # Single query: LEFT JOIN + GROUP_CONCAT to fetch labels in one go (avoids N+1)
+        cur.execute("""
+            SELECT t.id, t.title, t.description, t.column_name, t.priority, t.assignee_email,
+                   (t.start_time AT TIME ZONE 'UTC')::date as st_date,
+                   (t.end_time AT TIME ZONE 'UTC')::date as et_date, t.sort_order,
+                   COALESCE(ARRAY_TO_STRING(ARRAY_AGG(DISTINCT l.name || '|' || l.color), ','), '') as labels_csv
+            FROM kanban_tasks t
+            LEFT JOIN task_labels tl ON tl.task_id = t.id
+            LEFT JOIN kanban_labels l ON tl.label_id = l.id
+            GROUP BY t.id, t.title, t.description, t.column_name, t.priority, t.assignee_email,
+                     st_date, et_date, t.sort_order
+            ORDER BY t.column_name, t.sort_order
+        """)
         rows = cur.fetchall()
         
         tasks = []
         for r in rows:
-            tid, title, desc, col, priority, assignee, start_t, end_t, sort_o = r
+            tid, title, desc, col, priority, assignee, start_t, end_t, sort_o, labels_csv = r
             
-            # Get labels for this task
-            try:
-                cur2 = conn.cursor()
-                cur2.execute("""SELECT l.name, l.color FROM kanban_labels l
-                                JOIN task_labels tl ON tl.label_id=l.id WHERE tl.task_id=%s""", (tid,))
-                labels = [{'name': lr[0], 'color': lr[1]} for lr in cur2.fetchall()]
-                cur2.close()
-            except Exception:
-                labels = []
+            # Parse comma-separated "name|color" pairs into label list
+            labels = []
+            if labels_csv:
+                for pair in labels_csv.split(','):
+                    parts = pair.split('|', 1)
+                    if len(parts) == 2 and parts[0]:
+                        labels.append({'name': parts[0], 'color': parts[1]})
             
-            # start_t and end_t are already date objects from ::date cast — no tz issue
             st_str = str(start_t) if start_t else None
             et_str = str(end_t) if end_t else None
             
@@ -649,8 +686,8 @@ def create_task():
              col_name, data.get('priority', 'medium'),
              session.get('user_email') if session else None,
              data.get('assignee_email'),
-             data.get('start_time'),
-             data.get('end_time'),
+             _ensure_taipei_offset(data.get('start_time')),
+             _ensure_taipei_offset(data.get('end_time')),
              sort_order_val)
         )
         conn.commit()
@@ -675,11 +712,11 @@ def create_task():
         cur.close()
         conn.close()
     
-    # Notify assignee that task was created for them (email + calendar)
+    # Notify assignee that task was created for them (email + calendar) — use converted timestamps
     _notify_and_calendar_sync(tid, session.get('user_email', ''), data.get('assignee_email'), 
         title=data.get('title', ''), description=data.get('description', ''),
-        priority=data.get('priority', None), start_time=data.get('start_time'),
-        end_time=data.get('end_time'))
+        priority=data.get('priority', None), start_time=_ensure_taipei_offset(data.get('start_time')),
+        end_time=_ensure_taipei_offset(data.get('end_time')))
 
     return jsonify({'status': 'ok'})
 
@@ -751,13 +788,9 @@ def update_task(tid):
         for api_key, db_col in column_map.items():
             if api_key in data:
                 val = data[api_key]
-                # Handle time fields - convert to ISO format
+                # Handle time fields - convert to ISO format with Taipei offset
                 if api_key in ('start_time', 'end_time') and val is not None:
-                    try:
-                        dt = datetime.fromisoformat(str(val))
-                        val = dt.isoformat()
-                    except (ValueError, TypeError):
-                        pass
+                    val = _ensure_taipei_offset(val)
                 set_clauses.append(f"{db_col}=%s")
                 params.append(val if val is not None else '')
         
@@ -766,7 +799,6 @@ def update_task(tid):
             params.append(tid)
             cur.execute(query, params)
             conn.commit()
-        conn.commit()
         
         # Log activity for each changed field
         ts = datetime.utcnow().isoformat()
@@ -783,8 +815,8 @@ def update_task(tid):
             except Exception as e:
                 app.logger.warning("Failed to log activity change for task %s: %s", tid, str(e))
         # Notify on any significant field change (not just time)
-        new_start_str = data.get('start_time')
-        new_end_str = data.get('end_time')
+        new_start_str = _ensure_taipei_offset(data.get('start_time')) if data.get('start_time') else None
+        new_end_str = _ensure_taipei_offset(data.get('end_time')) if data.get('end_time') else None
         
         # Detect schedule change for calendar resync
         time_changed = False
@@ -1655,7 +1687,7 @@ def _notify_schedule_change(task_id, creator_email, assignee_email='', title='',
         if session.get('oauth_access_token'):
             app.logger.info("Schedule changed for task %s — resyncing calendar...", task_id)
             # Actually call the resync function (was previously only checking token availability)
-            result = cal_resync(google_id=google_id, task_id=task_id, title=title, description=description or '', assignee_emails=session.get('user_email', ''))
+            result = cal_resync(google_id=google_id, task_id=task_id)
             app.logger.info("Schedule resync for task %s: %s", task_id, "success" if result else "failed")
         else:
             app.logger.debug("No OAuth token available for schedule change on task %s — skipping calendar resync", task_id)

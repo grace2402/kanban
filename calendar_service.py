@@ -7,14 +7,45 @@ Token refresh and error handling centralized here.
 import os
 import re
 import requests
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
+from functools import wraps
+
+from timezone_utils import TZ_NAME as CALENDAR_TZ, to_gcal_datetime, effective_end
 
 
 # ── Configuration ──
-TZ = 'Asia/Taipei'
+TZ = CALENDAR_TZ  # Keep for backward compat with templates
 APP_URL = os.environ.get('KANBAN_APP_URL', os.environ.get('APP_URL', 'http://localhost:5001'))
 GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
 GOOGLE_CLIENT_SECRET = os.environ.get('GOOGLE_CLIENT_SECRET', '')
+
+
+# ── Retry decorator for external API calls ──
+def retry(max_retries=3, base_delay=1.0, backoff=2.0, exceptions=(requests.RequestException,)):
+    """Retry a callable with exponential backoff.
+
+    Google Calendar API is susceptible to transient 5xx / rate-limits.
+    This decorator retries on those errors and returns None on final failure.
+    """
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            delay = base_delay
+            last_exc = None
+            for attempt in range(max_retries + 1):
+                try:
+                    return fn(*args, **kwargs)
+                except exceptions as exc:
+                    last_exc = exc
+                    if attempt < max_retries:
+                        import time
+                        time.sleep(delay)
+                        delay *= backoff
+            # All retries exhausted — log and propagate
+            print(f"[calendar] {fn.__name__} failed after {max_retries + 1} attempts: {last_exc}")
+            return None
+        return wrapper
+    return decorator
 
 
 # ── Token Refresh ──
@@ -62,11 +93,16 @@ class _CalendarAPI:
     
     def create_event(self, summary, description='', start_time=None, end_time=None, attendee_emails=None):
         """Create a Google Calendar event. Returns (event_id|None)."""
+        
+        # Use centralized timezone helpers from timezone_utils.py
+        start_iso = to_gcal_datetime(start_time) if start_time else None
+        effective_end_val = effective_end(start_time, end_time) if end_time else start_iso
+        
         body = {
             'summary': summary or 'Task',
             'description': description or '',
-            'start': {'dateTime': str(start_time), 'timeZone': TZ},
-            'end':   {'dateTime': str(end_time) if end_time else str(start_time), 'timeZone': TZ},
+            'start': {'dateTime': start_iso, 'timeZone': TZ},
+            'end':   {'dateTime': effective_end_val, 'timeZone': TZ},
         }
         
         if attendee_emails:
@@ -77,44 +113,67 @@ class _CalendarAPI:
                 email_list = [str(e).strip() for e in attendee_emails if e]
             body['attendees'] = [{'email': e} for e in email_list]
         
-        try:
+        @retry(max_retries=3, base_delay=1.0)
+        def _post():
             r = requests.post(
                 'https://www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=all',
-                headers=self.headers, json=body, timeout=10
+                headers=self.headers, json=body, timeout=15
             )
-            if r.ok:
+            return r
+        
+        try:
+            r = _post()
+            if r and r.ok:
                 return r.json().get('id')
         except Exception as e:
-            pass
+            print(f"[calendar] create_event failed for '{summary}': {e}")
         return False
     
     def delete_event(self, event_id):
         """Delete an existing Google Calendar event. Returns True on success or 410 (already deleted)."""
-        try:
+        
+        @retry(max_retries=3, base_delay=1.0)
+        def _delete():
             r = requests.delete(
                 f'https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}?sendNotifications=true',
-                headers=self.headers, timeout=10
+                headers=self.headers, timeout=15
             )
+            return r
+        
+        try:
+            r = _delete()
+            if r is None:
+                return False
             # Google returns HTTP 410 when deleting an already-deleted event.
             # Treat 410 as idempotent success — the event is gone either way.
             return r.ok or r.status_code == 410
-        except Exception:
+        except Exception as e:
+            print(f"[calendar] delete_event failed for {event_id}: {e}")
             return False
     
     def update_event(self, event_id, summary=None, start_time=None, end_time=None):
         """Update an existing Google Calendar event."""
         body = {}
         if summary:   body['summary'] = summary
-        if start_time: body['start'] = {'dateTime': str(start_time), 'timeZone': TZ}
-        if end_time:   body['end']   = {'dateTime': str(end_time), 'timeZone': TZ}
+        # Use centralized to_gcal_datetime (same logic as create_event)
+        if start_time: body['start'] = {'dateTime': to_gcal_datetime(start_time), 'timeZone': TZ}
+        if end_time:   body['end']   = {'dateTime': to_gcal_datetime(end_time), 'timeZone': TZ}
         
-        try:
+        @retry(max_retries=3, base_delay=1.0)
+        def _put():
             r = requests.put(
                 f'https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}',
-                headers=self.headers, json=body, timeout=10
+                headers=self.headers, json=body, timeout=15
             )
+            return r
+        
+        try:
+            r = _put()
+            if r is None:
+                return False
             return r.ok
-        except Exception:
+        except Exception as e:
+            print(f"[calendar] update_event failed for {event_id}: {e}")
             return False
 
 
@@ -206,56 +265,6 @@ def create_event_with_all_attendees(title, description, start_time, end_time, as
     return None
 
 
-def resync_task_schedule(task_id):
-    """Reschedule calendar events for a task. Caller must have loaded tokens into session."""
-    try:
-        from flask import session as flask_session, current_app as ca
-    except ImportError:
-        return False
-    
-    token = flask_session.get('oauth_access_token')
-    if not token:
-        return False
-    
-    cal = get_calendar_service(token)
-    if not cal:
-        print(f"[calendar] No calendar service for resync of task {task_id}")
-        return False
-    
-    try:
-        db_uri = ca.config['SQLALCHEMY_DATABASE_URI'] if hasattr(ca, 'config') else os.environ.get('DATABASE_URL', '')
-        conn = __import__('sqlalchemy').create_engine(db_uri).raw_connection()
-        cur = conn.cursor()
-        try:
-            cur.execute(
-                "SELECT title, description, start_time, end_time, assignee_email FROM kanban_tasks WHERE id=%s",
-                (task_id,)
-            )
-            row = cur.fetchone()
-            if not row or not row[2]:
-                return False
-            
-            # Delete old events first  
-            _find_and_delete_calendar_events(task_id)  # Uses current token
-            
-            title, desc, st, et, ae_str = row
-            assignees = [e.strip() for e in str(ae_str).split(',') if e.strip()] if ae_str else []
-            
-            cal.create_event(
-                summary=f"📋 {title}",
-                description=desc or '',
-                start_time=str(st), end_time=str(et) if et else str(st),
-                attendee_emails=assignees
-            )
-        finally:
-            cur.close()
-            conn.close()
-    except Exception as e:
-        print(f"[calendar] Resync DB error for task {task_id}: {e}")
-    
-    return True
-
-
 def _find_and_delete_calendar_events(task_id):
     """Find and delete calendar events stored in this task's description."""
     try:
@@ -303,7 +312,6 @@ def _find_and_delete_calendar_events(task_id):
     
     return deleted_count
 
-    """Create a CalendarAPI client from an access token."""
     if not access_token:
         return None
     
@@ -555,7 +563,7 @@ def resync_task_schedule(google_id, task_id):
             
             # Step 2: Delete old [CALENDAR:] markers from description  
             cur2.execute(
-                "UPDATE kanban_tasks SET description = regexp_replace(description, '\\\\[CALENDAR:[a-zA-Z0-9_-]+\\\\]', '', 'g') WHERE id=:tid",
+                "UPDATE kanban_tasks SET description = regexp_replace(description, '\\[CALENDAR:[a-zA-Z0-9_-]+\\]', '', 'g') WHERE id=:tid",
                 {'tid': task_id}
             )
             conn2.commit()
@@ -576,20 +584,21 @@ def resync_task_schedule(google_id, task_id):
         
         # Step 4: Store new event ID in kanban_calendar_events table
         if new_event_id:
+            conn3 = _ce(db_uri).raw_connection()
+            cur3 = conn3.cursor()
             try:
-                db_session.execute(
-                    __import__('sqlalchemy').text(
-                        "INSERT INTO kanban_calendar_events (task_id, calendar_event_id, summary) VALUES (:tid,:eid,:summary)"
-                    ),
+                cur3.execute(
+                    "INSERT INTO kanban_calendar_events (task_id, calendar_event_id, summary) VALUES (:tid,:eid,:summary)",
                     {'tid': task_id, 'eid': new_event_id, 'summary': title or ''}
                 )
-                db_session.commit()
-            except Exception as e:
-                print(f"[resync] Failed to store event ID {new_event_id} for task {task_id}: {e}")
+                conn3.commit()
+            finally:
+                cur3.close()
+                conn3.close()
         
         return True
         
     except Exception as e:
-        print(f"Schedule resync failed for task {task_id}: {e}")
+        print(f"[calendar] Schedule resync failed for task {task_id}: {e}")
         return False
 

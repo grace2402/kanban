@@ -100,7 +100,7 @@
 </div>
 
 <div class="kanban-wrapper" id="kanbanWrapper">
-  <div class="kanban-board" id="kanbanBoard">
+    <div class="kanban-board" id="kanbanBoard">
     {% if not user_email %}
     <!-- Login Gate Overlay -->
     <div class="login-gate" id="loginGate">
@@ -111,31 +111,7 @@
       </div>
     </div>
     {% endif %}
-    <div class="kanban-column column-backlog" data-column="backlog">
-      <div class="column-header"><span>&#x1f4cb; Backlog</span><span class="column-count" id="count-backlog">0</span></div>
-      <div class="column-body" id="col-backlog" ondragover="allowDrop(event)" ondrop="dropCard(event, 'backlog')"></div>
-      <button class="add-card-btn" onclick="openAddModal('backlog')">+ 新增任務</button>
-    </div>
-    <div class="kanban-column column-todo" data-column="todo">
-      <div class="column-header"><span>&#x1f4dd; To Do</span><span class="column-count" id="count-todo">0</span></div>
-      <div class="column-body" id="col-todo" ondragover="allowDrop(event)" ondrop="dropCard(event, 'todo')"></div>
-      <button class="add-card-btn" onclick="openAddModal('todo')">+ 新增任務</button>
-    </div>
-    <div class="kanban-column column-in_progress" data-column="in_progress">
-      <div class="column-header"><span>&#x1f528; In Progress</span><span class="column-count" id="count-in_progress">0</span></div>
-      <div class="column-body" id="col-in_progress" ondragover="allowDrop(event)" ondrop="dropCard(event, 'in_progress')"></div>
-      <button class="add-card-btn" onclick="openAddModal('in_progress')">+ 新增任務</button>
-    </div>
-    <div class="kanban-column column-review" data-column="review">
-      <div class="column-header"><span>&#x1f50d; Review</span><span class="column-count" id="count-review">0</span></div>
-      <div class="column-body" id="col-review" ondragover="allowDrop(event)" ondrop="dropCard(event, 'review')"></div>
-      <button class="add-card-btn" onclick="openAddModal('review')">+ 新增任務</button>
-    </div>
-    <div class="kanban-column column-done" data-column="done">
-      <div class="column-header"><span>&#x2705; Done</span><span class="column-count" id="count-done">0</span></div>
-      <div class="column-body" id="col-done" ondragover="allowDrop(event)" ondrop="dropCard(event, 'done')"></div>
-      <button class="add-card-btn" onclick="openAddModal('done')">+ 新增任務</button>
-    </div>
+    <!-- Columns rendered dynamically by JS -->
   </div>
 </div>
 
