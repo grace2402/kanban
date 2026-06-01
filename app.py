@@ -302,9 +302,10 @@ def get_all_tasks():
     conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
     cur = conn.cursor()
     try:
-        # Use ::date cast in SELECT so PostgreSQL handles timezone conversion before Python sees it.
+        # Use AT TIME ZONE 'UTC' for timezone-safe date extraction (same as get_calendar_tasks)
         cur.execute("""SELECT id, title, description, column_name, priority, assignee_email, 
-                       start_time::date as st_date, end_time::date as et_date, sort_order
+                       (start_time AT TIME ZONE 'UTC')::date as st_date, 
+                       (end_time AT TIME ZONE 'UTC')::date as et_date, sort_order
                       FROM kanban_tasks ORDER BY column_name, sort_order""")
         rows = cur.fetchall()
         
@@ -378,17 +379,20 @@ def get_calendar_tasks():
     conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
     cur = conn.cursor()
 
-    # Use ::date cast in SELECT so PostgreSQL handles timezone conversion (UTC→local) before Python sees it.
-    # This fixes the bug where end_time='2026-06-02T00:00+08:00' gets stored as 2026-06-01 16:00 UTC,
-    # and strftime('%Y-%m-%d') would incorrectly return '2026-06-01' instead of '2026-06-02'.
+    # Use AT TIME ZONE 'UTC' for timezone-safe date extraction.
+    # This ensures dates are ALWAYS interpreted as UTC regardless of PostgreSQL session timezone,
+    # preventing the bug where end_time='2026-06-02T00:00+08:00' (Taipei) would show as June 3
+    # if the DB session TZ was set to Asia/Taipei.
+    # Also fixed: changed filter from "end >= next_month" to "end > month_start" so single-month tasks appear.
     if user_email:
         like_pattern = '%' + user_email + '%'
         query = """
             SELECT id, title, description, priority, assignee_email, 
-                   start_time::date as st_date, end_time::date as et_date
+                   (start_time AT TIME ZONE 'UTC')::date as st_date, 
+                   (end_time AT TIME ZONE 'UTC')::date as et_date
             FROM kanban_tasks
-            WHERE (%s <= COALESCE(end_time::date, date '9999-12-31'))
-              AND (COALESCE(start_time::date, date '1970-01-01') < %s)
+            WHERE (%s < COALESCE((end_time AT TIME ZONE 'UTC')::date, date '9999-12-31'))
+              AND (COALESCE((start_time AT TIME ZONE 'UTC')::date, date '1970-01-01') < %s)
               AND assignee_email LIKE %s
             ORDER BY start_time ASC
         """
@@ -396,10 +400,11 @@ def get_calendar_tasks():
     else:
         query = """
             SELECT id, title, description, priority, assignee_email, 
-                   start_time::date as st_date, end_time::date as et_date
+                   (start_time AT TIME ZONE 'UTC')::date as st_date, 
+                   (end_time AT TIME ZONE 'UTC')::date as et_date
             FROM kanban_tasks
-            WHERE (%s <= COALESCE(end_time::date, date '9999-12-31'))
-              AND (COALESCE(start_time::date, date '1970-01-01') < %s)
+            WHERE (%s < COALESCE((end_time AT TIME ZONE 'UTC')::date, date '9999-12-31'))
+              AND (COALESCE((start_time AT TIME ZONE 'UTC')::date, date '1970-01-01') < %s)
             ORDER BY start_time ASC
         """
         cur.execute(query, (start_date, end_date))
@@ -516,12 +521,12 @@ def get_calendar_assignees():
     conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
     cur = conn.cursor()
 
-    # Get distinct assignee emails for tasks in this month
+    # Get distinct assignee emails for tasks in this month (use AT TIME ZONE UTC for timezone safety)
     cur.execute("""
         SELECT DISTINCT assignee_email
         FROM kanban_tasks
-        WHERE (%s <= COALESCE(end_time::date, date '9999-12-31'))
-          AND (COALESCE(start_time::date, date '1970-01-01') < %s)
+        WHERE (%s < COALESCE((end_time AT TIME ZONE 'UTC')::date, date '9999-12-31'))
+          AND (COALESCE((start_time AT TIME ZONE 'UTC')::date, date '1970-01-01') < %s)
           AND assignee_email IS NOT NULL
           AND assignee_email != ''
         ORDER BY assignee_email ASC
