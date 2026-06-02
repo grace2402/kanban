@@ -82,15 +82,42 @@ def ensure_calendar_events_table():
     except Exception as e:
         app.logger.warning("Failed to ensure kanban_calendar_events table: %s", str(e))
 
+# ── Ensure database indexes for performance ──
+def ensure_indexes():
+    """Create performance indexes on frequently queried columns."""
+    
+    idx_map = [
+        'CREATE INDEX IF NOT EXISTS idx_kanban_tasks_creator ON kanban_tasks(creator_email)',
+        'CREATE INDEX IF NOT EXISTS idx_kanban_tasks_column ON kanban_tasks(column_name, creator_email)',
+        'CREATE INDEX IF NOT EXISTS idx_calendar_events_task ON kanban_calendar_events(task_id)',
+        'CREATE INDEX IF NOT EXISTS idx_subtasks_parent ON subtasks(parent_task_id)',
+        'CREATE INDEX IF NOT EXISTS idx_kanban_users_email ON kanban_users(email)',
+        'CREATE INDEX IF NOT EXISTS idx_kanban_users_google_id ON kanban_users(google_id) WHERE google_id IS NOT NULL',
+    ]
+
+    for sql in idx_map:
+        try:
+            conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
+            cur = conn.cursor()
+            cur.execute(sql)
+            # IF NOT EXISTS silently skips if index exists; otherwise creates it
+            conn.commit()
+            cur.close()
+            conn.close()
+        except Exception as e:
+            app.logger.info("Index status (%s): %s", sql[:50], 'exists' if 'duplicate' in str(e).lower() else f'skipped ({str(e)[:60]})')
+
+
 # Run on startup (deferred until first request)
 with app.app_context():
     try:
-        # Ensure tasks table exists first
+        # Ensure tasks table exists first, then calendar events + indexes
         conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
         cur = conn.cursor()
         cur.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'kanban_tasks')")
         if cur.fetchone()[0]:
             ensure_calendar_events_table()
+            ensure_indexes()
         cur.close()
         conn.close()
     except Exception:
@@ -228,10 +255,15 @@ def index():
         return render_template('index.html', user_email=None, currentUserEmail='')
     return render_template('index.html', user_email=user_email, currentUserEmail=user_email)
 
-@csrf.exempt
 @app.route('/login/dev', methods=['POST'])
+@csrf.exempt
 def dev_login():
     """Development-only: skip OAuth, set session directly. Use only for local testing."""
+    # Security: block in production unless explicitly enabled via DEV_MODE env var
+    if not os.environ.get('DEV_MODE'):
+        flash('Dev login 在正式環境不可用', 'error')
+        return redirect(url_for('index'))
+
     email = request.form.get('email', 'vip@test.com')
     session['user_email'] = email
     
@@ -265,6 +297,17 @@ def dev_login():
 @app.route('/login/dev-csrf', methods=['GET'])
 def dev_login_form():
     """Development-only: simple login form (no CSRF for testing). Supports ?next=... redirect after login."""
+    # Security: block in production unless explicitly enabled via DEV_MODE env var
+    if not os.environ.get('DEV_MODE'):
+        from flask import render_template_string, request
+        return render_template_string(
+            '''<div style="font-family:sans-serif;text-align:center;padding:40px">
+                <h2>Dev Login 已停用</h2>
+                <p>此環境未設定 DEV_MODE 環境變數。</p>
+                <a href="/">← Back to Kanban</a>
+            </div>'''
+        ), 403
+
     from flask import render_template_string, request
     next_url = request.args.get('next', '')
     
