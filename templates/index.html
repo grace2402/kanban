@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Kanban Board - Monitoring System</title>
-  <link rel="stylesheet" href="/static/css/kanban.css?v5">
-  <script src="/static/js/kanban.js?v9"></script>
+  <link rel="stylesheet" href="/static/css/kanban.css?v6">
+  <script src="/static/js/kanban.js?v12"></script>
   <script src="/static/js/kanban-p5.js?v1"></script>
 </head>
 <body>
@@ -151,14 +151,14 @@
       <div id="assigneeBadgesContainer" style="display:none; flex-wrap:wrap; gap:4px;"></div>
     </div>
 
-    <!-- Date/time pickers (Phase 3) -->
-    <div class="form-datetime">
-      <div class="form-group">
+    <!-- Date/time pickers (Phase 3) — horizontal layout -->
+    <div class="form-datetime-horizontal">
+      <div class="datetime-half">
         <label>&#x1f4c5; 開始時間</label>
         <input type="date" id="taskStartDate" value="">
         <input type="time" id="taskStartTime" value="00:00">
       </div>
-      <div class="form-group">
+      <div class="datetime-half">
         <label>&#x1f4c5; 結束時間</label>
         <input type="date" id="taskEndDate" value="">
         <input type="time" id="taskEndTime" value="23:59">
@@ -180,7 +180,7 @@
 
     <div class="modal-actions">
       <button class="btn-cancel" onclick="closeModal()">取消</button>
-      <button class="btn-save" onclick="saveTask(); return false;">&#x1f4be; 儲存</button>
+      <button class="btn-save" id="saveTaskBtn" onclick="saveTask(); return false;">&#x1f4be; 儲存</button>
     </div>
   </div>
 </div>

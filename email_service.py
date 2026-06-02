@@ -14,7 +14,7 @@ import smtplib
 import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 
 # ── SMTP Configuration ──
@@ -78,17 +78,22 @@ def build_task_notification_html(task_id, title, description, priority, start_ti
     start_display = fmt_time(start_time)
     end_display = fmt_time(end_time)
     time_info = f"{start_display} ~ {end_display}" if start_time or end_time else "未設定排程"
-    
+
     # Google Calendar link (TEMPLATE action lets user review before adding)
     cal_url = ""
     
     def _parse_naive_dt(ts):
-        """Parse ISO timestamp, strip timezone info to get the local date the user intended.
+        """Parse ISO timestamp and return a UTC naive datetime for Google Calendar URL.
         
-        When DB stores '2026-06-01T00:00+08:00' (Taipei midnight), we want June 1st
-        as the calendar date — not June 31st which would result from converting to UTC first.
-        Google Calendar template URLs use naive UTC timestamps, so we just extract the local
-        date/time components directly without timezone conversion.
+        CRITICAL: Google Calendar template URLs (dates parameter) use 'Z' suffix = UTC.
+        If we convert to Taipei local time and append Z, Google reads it as UTC → 8h off!
+        
+        So we must convert BACK to UTC before stripping tzinfo for the URL format.
+        
+        Example: DB has "2026-06-01T09:00+08:00" (Taipei 9am)
+          psycopg2 returns: datetime(2026,5,31,17,0,tzinfo=UTC) — same instant in UTC
+          .astimezone(timezone.utc).replace(tzinfo=None) → datetime(2026,5,31,17,0) naive
+          Formatted as "20260531T170000Z" → Google reads: UTC 17:00 = Taipei June 1 9am ✓
         """
         if ts is None:
             return None
@@ -96,20 +101,51 @@ def build_task_notification_html(task_id, title, description, priority, start_ti
         # Replace 'Z' with '+00:00' for fromisoformat compatibility
         s = s.replace('Z', '+00:00')
         dt = datetime.fromisoformat(s)
-        # Strip timezone → naive datetime keeps the local date/time components
-        return dt.replace(tzinfo=None)
+        
+        if dt.tzinfo is not None:
+            # Has timezone → convert to UTC first, THEN strip offset.
+            utc_dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        else:
+            # Already naive — assume it's already in the right local time.
+            # For Google URL with Z suffix, this is treated as UTC by definition.
+            utc_dt = dt
+        
+        return utc_dt
     
     if start_time:
         try:
             dt_start = _parse_naive_dt(start_time)
-            if end_time and end_time != start_time:
-                dt_end = _parse_naive_dt(end_time)
-                # For multi-day tasks (end date > start date), Google Calendar needs exclusive end → add 1 day
-                if dt_end.date() > dt_start.date():
-                    cal_dates = f"{dt_start.strftime('%Y%m%dT%H%M%SZ')}/{(dt_end + timedelta(days=1)).strftime('%Y%m%dT000000Z')}"
+            
+            # Determine local (Taipei) date from original timestamp string
+            def _local_date(ts):
+                """Extract the LOCAL (Taipei) date from an ISO timestamp.
+                
+                CRITICAL: Timestamps may come as UTC-datetime.isoformat() or 
+                +08:00 offset strings. We must convert to Taipei timezone FIRST,
+                then extract the date — NOT just call .date() on a UTC datetime.
+                """
+                s = str(ts).replace('Z', '+00:00')
+                dt = datetime.fromisoformat(s)
+                # Convert to Taipei timezone first, THEN extract date
+                if dt.tzinfo is not None:
+                    return dt.astimezone(timezone(timedelta(hours=8))).date()
                 else:
-                    # Same-day task → use end_time as-is (Google interprets this as the day boundary)
-                    cal_dates = f"{dt_start.strftime('%Y%m%dT%H%M%SZ')}/{(dt_end + timedelta(days=1)).strftime('%Y%m%dT000000Z')}"
+                    # Already naive — assume it's in local (Taipei) time
+                    return dt.date()
+            
+            if end_time and end_time != start_time:
+                local_end_date = _local_date(end_time)
+                local_start_date = _local_date(start_time)
+                dt_end = _parse_naive_dt(end_time)
+                
+                if local_end_date > local_start_date:
+                    # Multi-day task: preserve actual start/end times from input
+                    # Use _parse_naive_dt which converts to UTC-naive for Google URL
+                    cal_dates = f"{dt_start.strftime('%Y%m%dT%H%M%SZ')}/{(dt_end).strftime('%Y%m%dT%H%M%S')}Z"
+                else:
+                    # Same-day task → end_time is a specific time on the same day. 
+                    # Do NOT add 1 day here — that would push it to the next calendar day!
+                    cal_dates = f"{dt_start.strftime('%Y%m%dT%H%M%SZ')}/{(dt_end).strftime('%Y%m%dT%H%M%S')}Z"
             else:
                 # Single-point time → treat as full day (add 1 day for end)
                 cal_dates = f"{dt_start.strftime('%Y%m%dT%H%M%SZ')}/{(dt_start + timedelta(days=1)).strftime('%Y%m%dT000000Z')}"

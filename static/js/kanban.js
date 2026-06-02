@@ -69,7 +69,7 @@ const DEFAULT_TASKS = [
 var DEFAULT_COLUMNS = ['backlog', 'todo', 'in_progress', 'review', 'done'];
 var allColumns = []; // loaded from /api/columns
 
-function loadColumns() {
+function loadColumns(callback) {
     fetch('/api/columns', { credentials: 'same-origin' })
         .then(function(r) { return r.json(); })
         .then(function(cols) { 
@@ -82,6 +82,7 @@ function loadColumns() {
                 });
             }
             renderColumnLayout();
+            if (callback) callback();
         })
         .catch(function(err) { 
             console.warn('Failed to load columns:', err); 
@@ -89,6 +90,7 @@ function loadColumns() {
                 return { name: name, display_name: _getDisplayName(name), sort_order: i + 1 };
             });
             renderColumnLayout();
+            if (callback) callback();
         });
 }
 
@@ -112,7 +114,7 @@ function renderColumnLayout() {
             ? '' 
             : (COLUMN_ICONS[col.name] || '');
         
-        var displayName = (col.display_name || _getDisplayName(col.name)).replace(/^[^\s]+\s*/, ''); // strip icon if present in display_name
+        var displayName = col.display_name || _getDisplayName(col.name);
         
         var div = document.createElement('div');
         div.className = 'kanban-column column-' + col.name;
@@ -155,17 +157,27 @@ function loadTasks() {
             console.log('[kanban] /api/tasks response status:', r.status);
             return r.json().then(function(data) {
                 if (!r.ok || !Array.isArray(data)) {
-                    // 401 or other error — fall back to defaults
+                    // Logged-in user: don't overwrite cached data with defaults on API error.
+                    // Not logged in (public board): fall back to defaults.
                     console.warn('[kanban] API returned non-OK status', r.status, data);
-                    tasks = DEFAULT_TASKS.slice();
-                    saveTasks();
+                    var isPublic = false;
+                    try { isPublic = !window.currentUserEmail; } catch(e) {}
+                    if (!isPublic && tasks.length > 0) {
+                        console.log('[kanban] Keeping cached tasks for logged-in user:', tasks.length);
+                    } else {
+                        // Public board or no cache — use defaults
+                        tasks = DEFAULT_TASKS.slice();
+                        saveTasks();
+                    }
                     renderBoard();
+                    loadDashboardStats();
                     return;
                 }
                 console.log('[kanban] Loaded', data.length, 'tasks from DB');
                 tasks = data;
                 saveTasks();  
                 renderBoard();
+                loadDashboardStats();
             });
         })
         .catch(function(err) {
@@ -175,6 +187,7 @@ function loadTasks() {
                 saveTasks();
             }
             renderBoard();
+            loadDashboardStats();
         });
 }
 
@@ -195,22 +208,38 @@ function escHtml(s) {
 // ==========================================
 
 function loadDashboardStats() {
-    fetch('/api/stats', { credentials: 'same-origin' })
-        .then(function(r) { return r.json(); })
-        .then(function(stats) {
-            document.getElementById('totalTasks').textContent = stats.total;
-            document.getElementById('overdueCount').textContent = stats.overdue_count;
-            
-            // Update column counts dynamically from loaded columns
-            var columns = allColumns.length > 0 ? allColumns : DEFAULT_COLUMNS;
-            columns.forEach(function(col) {
-                var elId = 'col' + col.charAt(0).toUpperCase() + col.slice(1);
-                if (document.getElementById(elId)) {
-                    document.getElementById(elId).textContent = stats.by_column[col] || 0;
-                }
-            });
-        })
-        .catch(function(err) { console.warn('Failed to load dashboard stats:', err); });
+    // Compute stats from local tasks array directly — no race condition with /api/stats
+    var total = tasks.length || 0;
+    
+    document.getElementById('totalTasks').textContent = total;
+    
+    var overdueCount = 0;
+    for (var i = 0; i < tasks.length; i++) {
+        if (isOverdue(tasks[i])) overdueCount++;
+    }
+    document.getElementById('overdueCount').textContent = overdueCount;
+    
+    // Count by column — uses same logic as renderBoard but without filters
+    var columns = allColumns.length > 0 ? allColumns : DEFAULT_COLUMNS;
+    var colCounts = {};
+    for (var i = 0; i < tasks.length; i++) {
+        var c = tasks[i].column || '';
+        colCounts[c] = (colCounts[c] || 0) + 1;
+    }
+    
+    // Map internal column names to the fixed HTML IDs in index.html dashboard-stats section
+    var ID_MAP = { 'backlog': 'colBacklog', 'todo': 'colTodo', 'in_progress': 'colProgress', 'review': 'colReview', 'done': 'colDone' };
+    
+    columns.forEach(function(col) {
+        var colName = typeof col === 'string' ? col : (col.name || '');
+        // Find matching dashboard stat ID via the map, or skip if not in the dashboard section
+        for (var srcCol in ID_MAP) {
+            if (srcCol === colName && document.getElementById(ID_MAP[srcCol])) {
+                document.getElementById(ID_MAP[srcCol]).textContent = colCounts[colName] || 0;
+                break;
+            }
+        }
+    });
 }
 
 function toggleDarkMode() {
@@ -333,6 +362,7 @@ function filterAndRender() {
     searchQuery = document.getElementById('searchInput') ? document.getElementById('searchInput').value.trim() : '';
     priorityFilter = document.getElementById('priorityFilter') ? document.getElementById('priorityFilter').value : '';
     renderBoard();
+    loadDashboardStats();
 }
 
 // Batch mode functions
@@ -351,6 +381,7 @@ function toggleBatchMode() {
         toolbar.classList.add('hidden');
     }
     renderBoard();
+    loadDashboardStats();
 }
 
 function toggleSelect(id) {
@@ -575,6 +606,7 @@ function exportCSV() {
 function clearSelection() {
     selectedTaskIds = {};
     renderBoard();
+    loadDashboardStats();
 }
 
 // Label functions - load labels from API on init
@@ -624,6 +656,7 @@ function toggleLabelFilter(name) {
     }
     
     renderBoard();
+    loadDashboardStats();
     renderLabelFilterChips();
 }
 
@@ -811,6 +844,7 @@ function dropCard(e, col) {
     task.column = col;
     saveTasks();
     renderBoard();
+    loadDashboardStats();  // Issue #3 fix: update stats after drag-and-drop
     
     fetch('/api/task/' + id, {
         credentials: 'same-origin',
@@ -936,6 +970,12 @@ function saveTask() {
     var priority = document.getElementById('taskPriority').value;
     if (!title) { alert('請輸入標題'); return; }
 
+    // Hide save button immediately to prevent double-clicks (Issue #2)
+    var btn = document.getElementById('saveTaskBtn');
+    if (btn) {
+        btn.style.visibility = 'hidden';
+    }
+
     // Phase 3: Read new fields (multi)
     var assigneeEmailsStr = document.getElementById('assignedUserEmails').value || null;
     
@@ -989,7 +1029,11 @@ function saveTask() {
         })
         .then(function(data) { tasks = data; saveTasks(); renderBoard(); })
         .catch(function(err) { console.error('Save failed:', err); })
-        .finally(function() { closeModal(); loadDashboardStats(); });
+        .finally(function() { 
+            if (btn) btn.style.visibility = 'visible';  // Restore button visibility
+            closeModal(); 
+            loadDashboardStats(); 
+        });
     } else {
         var newId = 't' + Date.now();
         fetch('/api/task', { 
@@ -1015,7 +1059,11 @@ function saveTask() {
         })
         .then(function(data) { tasks = data; saveTasks(); renderBoard(); })
         .catch(function(err) { console.error('Create failed:', err); })
-        .finally(function() { closeModal(); loadDashboardStats(); });
+        .finally(function() { 
+            if (btn) btn.style.visibility = 'visible';  // Restore button visibility
+            closeModal(); 
+            loadDashboardStats(); 
+        });
     }
 }
 
@@ -1025,6 +1073,7 @@ function deleteTask(id) {
     tasks = tasks.filter(function(t) { return t.id !== id; });
     saveTasks();
     renderBoard();
+    loadDashboardStats();  // Issue #3 fix: update stats after deletion
     
     fetch('/api/task/' + id, { credentials: 'same-origin', method: 'DELETE' })
         .catch(function(err) { console.error('Delete failed:', err); });
@@ -1033,7 +1082,7 @@ function deleteTask(id) {
 function syncFromServer() {
     fetch('/api/tasks', { credentials: 'same-origin' })
         .then(function(r) { return r.json(); })
-        .then(function(data) { tasks = data; saveTasks(); renderBoard(); })
+        .then(function(data) { tasks = data; saveTasks(); renderBoard(); loadDashboardStats(); })  // Issue #3 fix: update stats after server sync
         .catch(function() {});
 }
 
@@ -1068,54 +1117,55 @@ document.addEventListener('DOMContentLoaded', function() {
     var userEmail = window.currentUserEmail;
     console.log('[kanban] page loaded, currentUserEmail:', JSON.stringify(userEmail));
 
-    loadTasks();
-    
-    // Load labels for filter chips and modal picker
-    if (document.getElementById('labelFilterBar')) {
-        loadLabels();
-    }
-    
-    // Phase 5: Load dynamic columns
-    loadColumns();
-    
-    // Initialize label search in modal
-    initLabelSearch();
+    // Phase 5: Load dynamic columns FIRST (creates column DOM elements)
+    // then load tasks and render board (needs those DOM elements)
+    function initAfterColumns() {
+        // Columns ready — now load tasks which will trigger renderBoard()
+        loadTasks();
+        
+        // Load labels for filter chips and modal picker
+        if (document.getElementById('labelFilterBar')) {
+            loadLabels();
+        }
+        
+        // Initialize label search in modal
+        initLabelSearch();
 
-    // Assignee Search Logic (Phase 3)
-    var ddEl = document.getElementById('assigneeDropdown');
-    var input = document.getElementById('taskAssigneeInput');
-    
-    if (ddEl && input) {
-        // Pre-fetch all users on load so focus shows them instantly.
-        fetch('/api/users?q=&page=1&limit=50', { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
-            .then(function(users) { window._allUsers = Array.isArray(users) ? users : []; })
-            .catch(function() { window._allUsers = []; });
-
-        input.addEventListener('focus', function() {
-            var q = input.value.trim();
-            // Always show self first for instant feedback, then update from cache/API.
-            renderSelfOnly();
-            if (window._allUsers && window._allUsers.length > 0) {
-                showDropdownFromCache(q);  // overlay with full cached list.
-            } else {
-                // Cache empty: fetch from API with current query text.
-                (q ? 
-                    fetch('/api/users?q=' + encodeURIComponent(q) + '&page=1&limit=50', { credentials: 'same-origin' }) :
-                    fetch('/api/users?page=1&limit=50', { credentials: 'same-origin' })
-                )
+        // Assignee Search Logic (Phase 3)
+        var ddEl = document.getElementById('assigneeDropdown');
+        var input = document.getElementById('taskAssigneeInput');
+        
+        if (ddEl && input) {
+            // Pre-fetch all users on load so focus shows them instantly.
+            fetch('/api/users?q=&page=1&limit=50', { credentials: 'same-origin' })
                 .then(function(r) { return r.json(); })
-                .then(function(users) {
-                    window._allUsers = Array.isArray(users) ? users : [];
-                    showDropdownFromCache(q);
-                })
-                .catch(function() {});
-            }
-        });
+                .then(function(users) { window._allUsers = Array.isArray(users) ? users : []; })
+                .catch(function() { window._allUsers = []; });
 
-        input.addEventListener('input', function() {
-            clearTimeout(window.assigneeSearchTimeout);
-            var q = input.value.trim();
+            input.addEventListener('focus', function() {
+                var q = input.value.trim();
+                // Always show self first for instant feedback, then update from cache/API.
+                renderSelfOnly();
+                if (window._allUsers && window._allUsers.length > 0) {
+                    showDropdownFromCache(q);  // overlay with full cached list.
+                } else {
+                    // Cache empty: fetch from API with current query text.
+                    (q ? 
+                        fetch('/api/users?q=' + encodeURIComponent(q) + '&page=1&limit=50', { credentials: 'same-origin' }) :
+                        fetch('/api/users?page=1&limit=50', { credentials: 'same-origin' })
+                    )
+                    .then(function(r) { return r.json(); })
+                    .then(function(users) {
+                        window._allUsers = Array.isArray(users) ? users : [];
+                        showDropdownFromCache(q);
+                    })
+                    .catch(function() {});
+                }
+            });
+
+            input.addEventListener('input', function() {
+                clearTimeout(window.assigneeSearchTimeout);
+                var q = input.value.trim();
             if (q.length >= 1) {
                 renderSelfOnly();  // instant self-show while fetching.
                 // Lazy fetch: only query API when user actually types.
@@ -1144,7 +1194,14 @@ document.addEventListener('DOMContentLoaded', function() {
                 ddEl.classList.add('hidden');
             }
         });
-    }
+        }
+    } // end initAfterColumns
+    
+    // Load columns first (creates DOM elements), then run initialization that depends on them
+    loadColumns(function() {
+        initAfterColumns();
+    });
+
 });
 
 /** Build and show dropdown from LOCAL cache (instant, no network delay). */
@@ -1696,6 +1753,7 @@ window.addEventListener('pageshow', function(e) {
                         tasks = data;
                         saveTasks();  
                         renderBoard();
+                        loadDashboardStats();
                     } else {
                         // Not logged in anymore — redirect to login
                         window.location.href = '/login';
@@ -1707,6 +1765,7 @@ window.addEventListener('pageshow', function(e) {
                 tasks = DEFAULT_TASKS.slice();
                 saveTasks();
                 renderBoard();
+                loadDashboardStats();
             });
     }
 });

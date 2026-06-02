@@ -40,7 +40,7 @@ def _ensure_taipei_offset(ts_str):
 
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'kanban-secret-key-change-me')
+app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY') or os.environ.get('SECRET_KEY', 'kanban-secret-key-change-me')
 # App metadata for emails
 APP_NAME = os.environ.get('APP_NAME', 'Kanban Board')
 APP_URL = os.environ.get('KANBAN_APP_URL', 'http://localhost:5001')
@@ -311,7 +311,8 @@ def require_login():
     if request.path.startswith('/api/') and 'user_email' not in session:
         # Allow /api/users without login (public user profiles for assignee search)
         # Also allow /api/calendar/delete-event to handle redirect-to-login internally
-        if request.path != '/api/users' and request.path != '/api/calendar/delete-event':
+        # Also allow /api/columns (schema endpoint, no auth needed)
+        if request.path not in ('/api/users', '/api/calendar/delete-event', '/api/columns'):
             return jsonify({'error': 'unauthorized', 'message': '需要登入'}), 401
 
 
@@ -1909,15 +1910,28 @@ def ensure_kanban_columns_table():
     try:
         conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
         cur = conn.cursor()
-        # Migrate hardcoded columns into the new table, preserving order
-        default_cols = ['backlog', 'todo', 'in_progress', 'review', 'done']
-        for i, col_name in enumerate(default_cols):
-            cur.execute(
-                """INSERT INTO kanban_columns (name, display_name, sort_order)
-                   VALUES (%s,%s,%s)
-                   ON CONFLICT (name) DO NOTHING""",
-                (col_name, _get_display_name(col_name), i + 1)
+        
+        # CREATE TABLE if it doesn't exist
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS kanban_columns (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(50) UNIQUE NOT NULL,
+                display_name VARCHAR(100),
+                sort_order INTEGER NOT NULL DEFAULT 0
             )
+        """)
+        
+        # Insert default columns if empty
+        cur.execute("SELECT COUNT(*) FROM kanban_columns")
+        count = cur.fetchone()[0]
+        if count == 0:
+            default_cols = ['backlog', 'todo', 'in_progress', 'review', 'done']
+            for i, col_name in enumerate(default_cols):
+                cur.execute(
+                    """INSERT INTO kanban_columns (name, display_name, sort_order)
+                       VALUES (%s,%s,%s)""",
+                    (col_name, _get_display_name(col_name), i + 1)
+                )
         conn.commit()
         cur.close()
         conn.close()
@@ -2227,15 +2241,14 @@ def delete_comment(cid):
         conn.close()
 
 
+# Ensure Phase 5 tables on module import (gunicorn imports but doesn't run __main__)
+try:
+    ensure_kanban_columns_table()
+    ensure_kanban_comments_table()
+except Exception as e:
+    app.logger.warning("Phase 5 table init failed at import: %s", str(e))
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
-
-    # Ensure Phase 5 tables exist
-    try:
-        ensure_kanban_columns_table()
-        ensure_kanban_comments_table()
-    except Exception as e:
-        app.logger.warning("Phase 5 table init failed: %s", str(e))
-
     app.run(host='0.0.0.0', port=port, debug=True)
 
