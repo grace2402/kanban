@@ -1427,13 +1427,21 @@ body {
    ========================================== */
 
 .kanban-card.overdue {
-    border-left: 3px solid #e74c3c;
+    border-left: 4px solid #e74c3c;
     animation: overdue-pulse 2s infinite;
+    background: linear-gradient(135deg, rgba(231, 76, 60, 0.18) 0%, rgba(231, 76, 60, 0.06) 100%);
+    box-shadow: 0 0 0 1px rgba(231, 76, 60, 0.25), 0 2px 8px rgba(231, 76, 60, 0.15);
 }
 
 @keyframes overdue-pulse {
-    0%, 100% { box-shadow: 0 2px 8px rgba(231, 76, 60, 0.2); }
-    50% { box-shadow: 0 2px 16px rgba(231, 76, 60, 0.4); }
+    0%, 100% { 
+        background: linear-gradient(135deg, rgba(231, 76, 60, 0.18) 0%, rgba(231, 76, 60, 0.06) 100%);
+        box-shadow: 0 0 0 1px rgba(231, 76, 60, 0.25), 0 2px 8px rgba(231, 76, 60, 0.2), inset 0 1px 4px rgba(231, 76, 60, 0.1);
+    }
+    50% { 
+        background: linear-gradient(135deg, rgba(231, 76, 60, 0.28) 0%, rgba(231, 76, 60, 0.12) 100%);
+        box-shadow: 0 0 0 1px rgba(231, 76, 60, 0.4), 0 4px 20px rgba(231, 76, 60, 0.35), inset 0 1px 8px rgba(231, 76, 60, 0.2);
+    }
 }
 
 .overdue-badge {
@@ -1446,6 +1454,26 @@ body {
     padding: 2px 6px;
     border-radius: 4px;
     font-weight: bold;
+}
+
+.overdue-icon {
+    position: absolute;
+    top: -8px;
+    right: -6px;
+    background: #e74c3c;
+    color: white;
+    font-size: 16px;
+    line-height: 1;
+    padding: 2px 5px;
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(231, 76, 60, 0.4);
+    z-index: 2;
+    animation: overdue-pulse-icon 2s infinite;
+}
+
+@keyframes overdue-pulse-icon {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.15); }
 }
 
 /* ==========================================
@@ -1485,6 +1513,22 @@ body {
 .dark-mode .kanban-column {
     background: linear-gradient(135deg, rgba(30, 41, 59, 0.5), rgba(15, 23, 42, 0.6));
     border-color: var(--border-color);
+}
+
+.dark-mode .kanban-card.overdue {
+    background: linear-gradient(135deg, rgba(231, 76, 60, 0.25) 0%, rgba(231, 76, 60, 0.12) 100%) !important;
+    border-left-color: #e74c3c;
+    box-shadow: 0 0 0 1px rgba(231, 76, 60, 0.3), 0 2px 8px rgba(231, 76, 60, 0.25) !important;
+    animation: overdue-pulse-dark 2s infinite;
+}
+
+@keyframes overdue-pulse-dark {
+    0%, 100% { 
+        background: linear-gradient(135deg, rgba(231, 76, 60, 0.25) 0%, rgba(231, 76, 60, 0.12) 100%) !important;
+    }
+    50% { 
+        background: linear-gradient(135deg, rgba(231, 76, 60, 0.4) 0%, rgba(231, 76, 60, 0.2) 100%) !important;
+    }
 }
 
 .dark-mode .card-title {

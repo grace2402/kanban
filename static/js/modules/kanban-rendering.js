@@ -109,8 +109,12 @@ function renderCard(t) {
                   ' onclick="event.stopPropagation();toggleSelect(\'' + t.id.replace(/'/g, "\\'") + '\')">';
     }
 
+    // Overdue warning icon
+    var overdueIcon = isOverdue(t) ? '<span class="overdue-icon" title="已逾期">⚠️</span>' : '';
+
     return '<div class="' + overdueClass + '" draggable="true" ondragstart="dragStart(event)" data-id="' + t.id + '">' +
         batchCb +
+        overdueIcon +
         '<div class="card-title">' + escHtml(t.title) + '</div>' +
         labelHtml +
         (t.description ? '<div class="card-desc">' + escHtml(t.description) + '</div>' : '') +
