@@ -2131,6 +2131,56 @@ def delete_column(col_name):
         conn.close()
 
 
+# ── Phase 5 API: POST /api/columns/reorder (drag-to-reorder columns) ──
+@csrf.exempt
+@app.route('/api/columns/reorder', methods=['POST'])
+def reorder_columns():
+    """Reorder columns by dragging one column onto another.
+    
+    Swaps the sort_order of source_column and target_column so that 
+    the dragged column snaps to the target position.
+    """
+    data = request.json or {}
+    source_col = (data.get('source_column') or '').strip()
+    target_col = (data.get('target_column') or '').strip()
+    
+    if not source_col or not target_col:
+        return jsonify({'error': 'missing source_column or target_column'}), 400
+    if source_col == target_col:
+        return jsonify({'status': 'ok'})  # no-op
+    
+    conn = create_engine(app.config['SQLALCHEMY_DATABASE_URI']).raw_connection()
+    cur = conn.cursor()
+    try:
+        # Read current sort_order values
+        cur.execute("SELECT sort_order FROM kanban_columns WHERE name=%s", (source_col,))
+        row_src = cur.fetchone()
+        if not row_src:
+            return jsonify({'error': f'column {source_col} not found'}), 404
+            
+        cur.execute("SELECT sort_order FROM kanban_columns WHERE name=%s", (target_col,))
+        row_tgt = cur.fetchone()
+        if not row_tgt:
+            return jsonify({'error': f'column {target_col} not found'}), 404
+        
+        order_src = row_src[0] or 0
+        order_tgt = row_tgt[0] or 0
+        
+        # Swap sort_order values
+        cur.execute("UPDATE kanban_columns SET sort_order=%s WHERE name=%s", (order_tgt, source_col))
+        cur.execute("UPDATE kanban_columns SET sort_order=%s WHERE name=%s", (order_src, target_col))
+        conn.commit()
+        
+        app.logger.info('Columns reordered: %s ↔ %s', source_col, target_col)
+        return jsonify({'status': 'ok'})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'error': str(e)}), 400
+    finally:
+        cur.close()
+        conn.close()
+
+
 # ── Phase 5 API: POST /api/tasks/batch-priority (batch update priority) ──
 @csrf.exempt
 @app.route('/api/tasks/batch-priority', methods=['POST'])
