@@ -185,6 +185,80 @@ function checkDarkModePreference() {
     if (saved === '1') {
         document.body.classList.add('dark-mode');
         var btn = document.getElementById('darkModeToggle');
-        if (btn) btn.textContent = '\u2600\ufffc';
+        if (btn) btn.textContent = '\u2600\ufe0f';
     }
 }
+
+/* ── Initialization on page load ── */
+
+document.addEventListener('DOMContentLoaded', function() {
+    // Check if we're actually logged in before trying to load tasks
+    var userEmail = window.currentUserEmail;
+    console.log('[kanban] page loaded, currentUserEmail:', JSON.stringify(userEmail));
+
+    /* Phase 5: Load dynamic columns FIRST (creates column DOM elements),
+       then load tasks and render board (needs those DOM elements) */
+    function initAfterColumns() {
+        // Columns ready — now load tasks which will trigger renderBoard()
+        loadTasks();
+        
+        // Load labels for filter chips and modal picker
+        if (document.getElementById('labelFilterBar')) {
+            loadLabels();
+        }
+        
+        // Initialize label search in modal
+        initLabelSearch();
+
+        // Assignee Search Logic (Phase 3) — pre-fetch all users on load
+        var ddEl = document.getElementById('assigneeDropdown');
+        var input = document.getElementById('taskAssigneeInput');
+        
+        if (ddEl && input) {
+            fetch('/api/users?q=&page=1&limit=50', { credentials: 'same-origin' })
+                .then(function(r) { return r.json(); })
+                .then(function(users) { window._allUsers = Array.isArray(users) ? users : []; })
+                .catch(function() { window._allUsers = []; });
+
+            input.addEventListener('focus', function() {
+                renderSelfOnly();
+                if (window._allUsers && window._allUsers.length > 0) {
+                    showDropdownFromCache('');
+                } else {
+                    fetch('/api/users?page=1&limit=50', { credentials: 'same-origin' })
+                        .then(function(r) { return r.json(); })
+                        .then(function(users) {
+                            window._allUsers = Array.isArray(users) ? users : [];
+                            showDropdownFromCache('');
+                        })
+                        .catch(function() {});
+                }
+            });
+
+            input.addEventListener('input', function() {
+                clearTimeout(window.assigneeSearchTimeout);
+                var q = input.value.trim();
+                if (q.length >= 1) {
+                    renderSelfOnly();
+                    window.assigneeSearchTimeout = setTimeout(function() {
+                        doSearch(q);
+                    }, 300);
+                } else {
+                    renderSelfOnly();
+                }
+            });
+
+            document.addEventListener('click', function(e) {
+                if (!e.target.closest('.form-assignee')) {
+                    ddEl.classList.add('hidden');
+                }
+            });
+        }
+    } // end initAfterColumns
+    
+    // Load columns first, then run initialization that depends on them
+    loadColumns(function() {
+        initAfterColumns();
+    });
+
+});
